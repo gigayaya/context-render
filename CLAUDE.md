@@ -28,6 +28,8 @@ Data flow: `cli.py` (typer) → `pipeline.py` (scan orchestration) → subpackag
 
 Every attribution carries a confidence: **exact** (observed marker in the transcript) or **heuristic** (best-effort inference). Keep the distinction — never promote a heuristic to exact without transcript evidence.
 
+Per-directory conventions live in each directory's own `CLAUDE.md` (`context_render/`, its subpackages, `tests/`, `docs/`, `.github/`) — this file stays big-picture only.
+
 ## Gotchas
 
 - **`SPIKES.md` verdicts are frozen.** Each spike decision was validated against real transcripts and locked; overturning one is a change-management event, not a refactor. Read it before touching parser/attributor behavior.
