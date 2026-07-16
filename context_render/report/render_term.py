@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from ..config import Config
 from .ansi import Style
-from .charts import daily_histogram, display_width, hbar_chart, pad_to
+from .charts import _short, daily_histogram, display_width, hbar_chart, pad_to, truncate_display
 from .context_map import context_map_lines
 from .timeline import render_timeline_lines
 
@@ -57,6 +57,44 @@ def _range_str(ranges: list, full: bool) -> str:
     if not full and len(toks) > 4:
         toks = toks[:4] + [f"+{len(toks) - 4}"]
     return " " + " ".join(toks)
+
+
+def _fmt_occ(v: int | None) -> str:
+    return _short(v) if v is not None else "·"  # blank column: not computable, never guessed
+
+
+def _selfderive_row(no: int, r: dict, style: Style, with_sessions: bool) -> str:
+    label = pad_to(truncate_display(r["label"], 18), 19)
+    method = pad_to(truncate_display(r["method"], 26), 27)
+    cells = f"{style.dim(f'{no:>4}')}  {label}{style.dim(method)}"
+    if with_sessions:
+        cells += f"{r['sessions']:>8}"
+    return (f"{cells}{r['times']:>7}{_short(r['tokens']):>8}"
+            f"{_fmt_occ(r['occupancy']):>8}")
+
+
+def _selfderive_header(style: Style, with_sessions: bool) -> str:
+    head = f"{'#':>4}  {pad_to('what the agent was after', 46)}"
+    if with_sessions:
+        head += f"{'sessions':>8}"
+    return style.dim(head + f"{'times':>7}{'tokens':>8}{'window~':>8}")
+
+
+def session_selfderive_lines(agg: dict, full: bool, style: Style) -> list[str]:
+    """SELF-DERIVATION block (§3.2): fixed ≤5 rows + header by default, --full/--md complete."""
+    sd = agg.get("self_derivation")
+    if sd is None:
+        return ["", style.dim(
+            "  self-derivation: unavailable (transcript expired before facts extraction)")]
+    if not sd:
+        return []
+    shown = sd if full or len(sd) <= 5 else sd[:5]
+    title = (f"SELF-DERIVATION — top {len(shown)} of {len(sd)} (--full for all)"
+             if len(shown) < len(sd) else f"SELF-DERIVATION — {len(sd)} item(s)")
+    lines = ["", "  " + style.bold(title), " " + _selfderive_header(style, with_sessions=False)]
+    for no, r in enumerate(shown, 1):
+        lines.append(" " + _selfderive_row(no, r, style, with_sessions=False))
+    return lines
 
 
 def session_lines(agg: dict, config: Config, full: bool,
@@ -163,6 +201,9 @@ def session_lines(agg: dict, config: Config, full: bool,
         detail = " + ".join(f"{b['id']} {b['tokens']:,}" for b in sc["breakdown"][:4])
         lines.append(style.dim(f"  ({detail})"))
 
+    # self-derivation closes the report (§3.2): what the agent went hunting for itself
+    lines.extend(session_selfderive_lines(agg, full, style))
+
     if full:
         ev_rows = [r for r in agg["components"] if r.get("evidence")]
         if ev_rows:
@@ -259,8 +300,46 @@ def window_lines(agg: dict, config: Config, full: bool,
     return lines
 
 
+ANALYZE_TERM_MAX = 20  # terminal truncation (--md is always complete, same as other reports)
+
+
+def analyze_lines(agg: dict, config: Config, full: bool,
+                  style: Style | None = None) -> list[str]:
+    """`analyze` output (§3.1): one summary line + one table, no other sections."""
+    style = style or Style()
+    w = agg["window"]
+    s = agg["summary"]
+    lines = [style.bold(
+        f"Self-derivation cost — {w['label']}, {w['session_count']} sessions "
+        f"(facts: {w['facts_sessions']} of {w['session_count']})"
+    )]
+    rows = agg["rows"]
+    if rows:
+        pct = f" ({s['pct']}% of tool output)" if s["pct"] is not None else ""
+        lines.append("")
+        lines.append(f"  agent spent ~{_short(s['tokens'])} tokens{pct} acquiring")
+        lines.append("  information the harness didn't provide")
+        lines.append("")
+        lines.append(" " + _selfderive_header(style, with_sessions=True))
+        shown = rows if full else rows[:ANALYZE_TERM_MAX]
+        for no, r in enumerate(shown, 1):
+            lines.append(" " + _selfderive_row(no, r, style, with_sessions=True))
+        if len(shown) < len(rows):
+            lines.append(style.dim(
+                f"   … truncated {len(rows) - len(shown)} more (use --md for all)"))
+    elif not agg.get("warnings"):
+        lines.append("")
+        lines.append(style.dim("  (no self-derivation detected in window)"))
+    for warning in agg.get("warnings", []):
+        lines.append("")
+        lines.append(style.yellow(warning))
+    return lines
+
+
 def render_term(agg: dict, config: Config, full: bool = False) -> str:
     style = Style.detect()
     if agg["report_type"] == "last":
         return "\n".join(session_lines(agg, config, full=full, style=style))
+    if agg["report_type"] == "analyze":
+        return "\n".join(analyze_lines(agg, config, full=full, style=style))
     return "\n".join(window_lines(agg, config, full=full, style=style))

@@ -41,10 +41,10 @@ GREP_RG_PATTERN_FLAGS = {"-e", "-f", "--regexp", "--file"}
 COMMIT_RESULT_RE = re.compile(r"\[[^\]]+ [0-9a-f]{7,}\]|files? changed")
 
 
-def split_segments(command: str) -> list[list[str]]:
-    """Tokenize with shlex in punctuation mode, then split into segments on | & ; and
-    unquoted newlines. Unparseable (unbalanced quotes, etc.) → empty list (prefer misses
-    over false positives).
+def split_segments_seps(command: str) -> list[tuple[str, list[str]]]:
+    """Like split_segments, but each segment keeps the separator run that preceded it
+    ("" for the first) — the facts extractor needs to know whether a grep sits mid-pipeline.
+    Unparseable (unbalanced quotes, etc.) → empty list (prefer misses over false positives).
 
     Punctuation mode emits separators as their own tokens even when attached
     (`2>/dev/null; ls` → `2>/dev/null`, `;`, `ls`), and a quoted newline stays inside
@@ -57,19 +57,35 @@ def split_segments(command: str) -> list[list[str]]:
         tokens = list(lex)
     except ValueError:
         return []
-    segments: list[list[str]] = []
+    segments: list[tuple[str, list[str]]] = []
     cur: list[str] = []
+    sep = ""
     for tok in tokens:
         # runs of punctuation arrive as one token ("&&", ";", "&&\n") → all boundaries
         if not set(tok) - SEPARATOR_CHARS:
             if cur:
-                segments.append(cur)
-            cur = []
+                segments.append((sep, cur))
+                cur = []
+            sep = tok
         else:
             cur.append(tok)
     if cur:
-        segments.append(cur)
+        segments.append((sep, cur))
     return segments
+
+
+def is_pipe_sep(sep: str) -> bool:
+    """True when the separator run feeds the previous segment's stdout into the next
+    (`|`, `|&`, possibly wrapped in unquoted newlines); `||` and `&&` are not pipes."""
+    return sep.strip("\n") in ("|", "|&")
+
+
+def split_segments(command: str) -> list[list[str]]:
+    """Tokenize with shlex in punctuation mode, then split into segments on | & ; and
+    unquoted newlines. Unparseable (unbalanced quotes, etc.) → empty list (prefer misses
+    over false positives).
+    """
+    return [argv for _, argv in split_segments_seps(command)]
 
 
 def _is_git_commit_segment(argv: list[str]) -> bool:

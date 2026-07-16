@@ -19,12 +19,15 @@ def _by_prefix(rows, prefix):
 
 
 def _session_agg(tmp_path, fake_repo, rich_session_lines, evidence=False):
+    from context_render.attributor.facts import extract_facts
+
     p = tmp_path / "s.jsonl"
     p.write_text(make_transcript(fake_repo, rich_session_lines), encoding="utf-8")
     parsed = parse_file(p)
     comps = [c for c in scan_components(fake_repo) if c.provenance == "local"]
     att = attribute(parsed, comps, fake_repo)
-    return aggregate_session(parsed, att, comps, Config(), include_evidence=evidence)
+    return aggregate_session(parsed, att, comps, Config(), include_evidence=evidence,
+                             facts=extract_facts(parsed).facts)
 
 
 def test_timeline_golden(tmp_path, fake_repo, rich_session_lines):

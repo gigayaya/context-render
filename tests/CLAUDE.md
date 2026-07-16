@@ -8,6 +8,8 @@ Pytest suite (`.venv/bin/python -m pytest`; pythonpath set in pyproject) — eve
 | `test_parser.py` | discovery / loader / versions behavior | Changing `parser/` |
 | `test_attributor.py` | R/L/I attribution rules | Changing `attributor/rules.py` |
 | `test_bash_heuristics.py` | Shell heuristics, including asserted misses — known false negatives are intended outcomes, don't "fix" production code to make them hit | Changing `bash_heuristics.py` |
+| `test_facts.py` | Self-derivation extraction; the decontamination cases are real dry-run contamination samples (W3 #19) frozen as regressions | Changing `attributor/facts.py` |
+| `test_analyze.py` | analyze aggregation/rendering/CLI, facts backfill and coverage, emit-prompt | Changing `report/selfderive.py` or the analyze command |
 | `test_inventory.py` | Scanner / manifest / `merge_refresh` | Changing `inventory/` |
 | `test_store_scan.py` | Store writes + pipeline scan flow | Changing `store/` or `pipeline.py` |
 | `test_migration.py` | DB migration chain | Adding a schema migration |

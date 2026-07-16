@@ -13,6 +13,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from ..attributor.facts import Fact
 from ..attributor.rules import Attribution
 from ..config import Config
 from ..cost import compute_session_cost, deadweight_cost
@@ -21,6 +22,7 @@ from ..parser.loader import ParsedSession
 from ..parser.versions import is_supported
 from ..pipeline import COST_CID, GIT_COMMIT_CID
 from ..store import Store
+from .selfderive import aggregate_rows, fact_dicts
 from .timeline import timeline_dicts
 
 SCHEMA_VERSION = 1
@@ -89,8 +91,13 @@ def _static_breakdown(components: list[Component]) -> tuple[int, list[dict]]:
 
 def aggregate_session(parsed: ParsedSession, att: Attribution,
                       components: list[Component], config: Config,
-                      include_evidence: bool = False) -> dict:
-    """Single-session aggregate (last, A4.2)."""
+                      include_evidence: bool = False,
+                      facts: list[Fact] | None = None) -> dict:
+    """Single-session aggregate (last, A4.2).
+
+    facts: this session's self-derivation facts (attributor.facts.extract_facts).
+    None means they were never extracted (a session whose transcript expired before
+    the facts feature landed) — the renderer says so instead of showing an empty block."""
     comps = [c for c in components if not c.missing]
     static_total, breakdown = _static_breakdown(comps)
     cost = compute_session_cost(parsed.events, static_total, config)
@@ -202,6 +209,10 @@ def aggregate_session(parsed: ParsedSession, att: Attribution,
     timeline = timeline_dicts(att.timeline, ts_reliable=not parsed.ts_out_of_order)
     _attach_ctx_tokens(timeline, context_samples)
 
+    self_derivation = (
+        aggregate_rows(fact_dicts(facts, parsed.session_id)) if facts is not None else None
+    )
+
     return {
         "schema_version": SCHEMA_VERSION,
         "report_type": "last",
@@ -222,6 +233,7 @@ def aggregate_session(parsed: ParsedSession, att: Attribution,
         "file_loads": file_loads,
         "context_samples": context_samples,
         "timeline": timeline,
+        "self_derivation": self_derivation,
         "static_context": {"total_tokens": static_total, "breakdown": breakdown[:10]},
         "warnings": warnings,
         "hints": [],

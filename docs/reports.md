@@ -42,6 +42,32 @@ Before the timeline, the session report has a **context window visualization**: 
 
 Below it, a second `window` bar shows **occupancy** (green): prompt-token usage per turn against the model window (denominator `context_window_tokens`, default 200k; a peak above it is proof of a bigger window and snaps the denominator to the next known tier, i.e. 1M — for 1M-window sessions that never cross 200k, set `context_window_tokens: 1000000` in config), linear scale, sharing the event bar's columns — so a compaction dip lines up vertically with its `⟐`. It only appears when the transcript carries usage data; `--no-graph` turns the map off.
 
+## Self-derivation (session block and `analyze`)
+
+**Every agent search is a question the harness didn't answer.** The self-derivation views count what the agent spent acquiring information itself — keyword searches (Grep/Glob tool calls and bash `grep`/`rg`/`fd`/`git grep`/`find -name`), repo-structure mapping (`find -type d`, `tree`, chains of `ls`), and chain reads (a file opened straight out of the previous search's results, merged into that search's row). It is a gauge, not a grader: rows are facts and costs, sorted by cost — no scores, no verdicts, no "you should".
+
+The session report ends with a `SELF-DERIVATION` block (top 5 rows; `--full`/`--md` for all). `context-render analyze` aggregates the same rows across a window:
+
+```
+Self-derivation cost — last 30d, 42 sessions (facts: 38 of 42)
+
+  agent spent ~206k tokens (9.8% of tool output) acquiring
+  information the harness didn't provide
+
+    #  what the agent was after                      sessions  times  tokens window~
+    1  repo layout        find -type d, ls chains         15     31     48k    390k
+    2  registerHandler    grep, 3 variants tried           6     14     38k    412k
+```
+
+- **what the agent was after** — one information need per row: a canonical keyword (case/regex-noise folded; the most common raw spelling is shown) or a structure-mapping action (`repo layout`). `N variants tried` means the agent guessed several spellings of the same term — a signal the project's vocabulary isn't documented. `+read chains` means files were opened straight out of search results to check them.
+- **tokens** — direct cost: the tool-result sizes of those actions, estimated as `ceil(utf8_len/4)`.
+- **window~** — occupancy cost: `tokens × assistant turns remaining` until session end or the next compaction — a proxy for how long the derived answer sat in the context window. Always heuristic (`~`); when it can't be computed the cell shows `·`, never a guess.
+- **facts: N of M** — facts are extracted at ingest and stored in the DB (transcripts expire; the extraction is the surviving record). Sessions ingested before this feature whose transcripts have already expired can never be backfilled and are excluded from the numbers; `sync` backfills every session whose transcript still exists.
+
+`analyze --emit-prompt <#|key>` prints one row's complete evidence (raw patterns, variants, per-event references, token accounting) as plain text — paste it to an agent to draft whatever scaffold would answer the need up front. Row numbers are unstable across runs; the canonical key isn't. The tool deliberately does not recommend what form the scaffold should take.
+
+Subagent searches count (real spend, tagged `[subagent]` in evidence), but their occupancy is computed against the subagent's own turn range — windows stay separate, as everywhere else.
+
 ## Subagents
 
 Subagent transcripts (stored by Claude Code as separate files under `<session-id>/subagents/`) are merged into the parent session chronologically. What a subagent loaded or invoked counts toward the session's component states, and its evidence and timeline rows are tagged `[subagent:<type>]`; its token usage counts toward the session total and cost.

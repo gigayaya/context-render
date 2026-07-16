@@ -16,6 +16,7 @@ import typer
 
 from . import __version__, hookinstall
 from .attributor import attribute
+from .attributor.facts import extract_facts
 from .config import Config, find_repo_root, load_config
 from .errors import PreconditionError
 from .inventory.scanner import (
@@ -32,6 +33,7 @@ from .report.ansi import Style
 from .report.charts import hbar_chart
 from .report.render_md import render_md, write_md
 from .report.render_term import render_term
+from .report.selfderive import aggregate_analyze, emit_prompt_text, select_row
 
 app = typer.Typer(add_completion=False, no_args_is_help=True,
                   context_settings={"help_option_names": ["-h", "--help"]})
@@ -208,15 +210,17 @@ def _session_report(session: str | None, md: bool, evidence: bool,
         target = max(eligible, key=lambda s: s.mtime)
     parsed = parse_file(target.path, target.sidechain_paths)
     att = attribute(parsed, components, repo_root)
+    facts = extract_facts(parsed)
     # Ingest on the spot if not yet stored (idempotent)
     store = open_store(repo_root)
     try:
         if store.needs_update(target.session_id, target.mtime, target.size):
-            srow, urows = build_rows(parsed, att, components, target, repo_root, config)
-            store.replace_session(srow, urows)
+            srow, urows, frows = build_rows(parsed, att, components, target, repo_root, config)
+            store.replace_session(srow, urows, frows)
     finally:
         store.close()
-    agg = aggregate_session(parsed, att, components, config, include_evidence=evidence)
+    agg = aggregate_session(parsed, att, components, config, include_evidence=evidence,
+                            facts=facts.facts)
     _emit(agg, config, repo_root, md, full=full)
 
 
@@ -281,7 +285,8 @@ Command overview
               (context injection order), context window map (▼ injections above / ▲ actions
               below; event-sized color blocks per lane + window-occupancy bar;
               labels = timeline row numbers),
-              numbered timeline (with [read]/[edit]/[write]/[bash] action events)
+              numbered timeline (with [read]/[edit]/[write]/[bash] action events),
+              and a SELF-DERIVATION block (top info-needs the agent answered itself)
               for any other session: context-render sessions <id-prefix>
               --evidence attach raw event evidence; --md write to file; --full untruncated
               terminal output (keeps color); --no-timeline/--no-graph
@@ -292,6 +297,13 @@ Command overview
 
   deadweight  focus on deadweight and never-triggered components, with token-share bar chart
               --since 90d (default)
+
+  analyze     self-derivation cost: every agent search is a question the harness didn't
+              answer — group what the agent went after, with token and window-occupancy
+              cost per information need (no scores, no verdicts)
+              --since 30d (default); --md write to file
+              --emit-prompt <#|key> print one row's full evidence as a drafting prompt
+              (plain text; deciding what scaffold to write is left to the reader)
 
   clear       clear record data (db.sqlite and reports/); manifest/config kept.
               sync only rebuilds sessions whose transcripts still exist — those Claude Code
@@ -488,6 +500,46 @@ def report(
 ):
     """Cross-session aggregate report (deadweight total, daily-activity histogram)."""
     _guard(lambda: _window_report(since, md, no_timeline, no_graph, False))
+
+
+@app.command()
+def analyze(
+    since: str = typer.Option("30d", "--since", help="Observation window (30d / 12w / 2026-06-01)"),
+    md: bool = typer.Option(False, "--md", help="Output markdown and write to file"),
+    emit_prompt: str = typer.Option(
+        None, "--emit-prompt", metavar="<#|KEY>",
+        help="Print one row's full evidence as a drafting prompt (plain text to stdout; "
+             "row numbers are unstable across runs, the canonical key isn't)"),
+):
+    """Self-derivation cost: what information the agent acquired itself because the
+    harness didn't provide it, grouped by what it was after, sorted by token cost."""
+
+    def run():
+        repo_root = find_repo_root()
+        config = load_config(repo_root)
+        load_manifest(repo_root)  # not init'd → exit 3
+        since_dt = parse_since(since)
+        store = open_store(repo_root)
+        try:
+            agg, fact_rows = aggregate_analyze(
+                store, config,
+                since_iso=since_dt.isoformat() if since_dt else None,
+                since_label=f"last {since}" if since else "all history",
+            )
+        finally:
+            store.close()
+        if emit_prompt:
+            row = select_row(agg["rows"], emit_prompt)
+            if row is None:
+                raise PreconditionError(
+                    f"--emit-prompt {emit_prompt!r} matches no row; give a row number from "
+                    "the current table or a canonical key (run context-render analyze first)"
+                )
+            typer.echo(emit_prompt_text(agg, fact_rows, row))
+            return
+        _emit(agg, config, repo_root, md)
+
+    _guard(run)
 
 
 @app.command()

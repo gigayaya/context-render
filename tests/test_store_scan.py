@@ -85,6 +85,7 @@ def test_internal_rows_written(fake_repo, fake_projects):
     ids = {r["component_id"] for r in rows}
     assert "_event:git_commit" in ids
     assert "_cost:static" in ids
+    assert "_facts:extract" in ids  # facts-extraction marker (coverage + backfill trigger)
 
 
 def test_no_timestamp_session_visible_in_windowed_query(fake_repo, fake_projects):

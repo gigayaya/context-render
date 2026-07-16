@@ -14,6 +14,11 @@ as unreproducible.
 Internal reserved component ids (underscore-prefixed, excluded from the component list during aggregation):
   _event:git_commit  — number of git commit events in the session (for the hook MISS verdict)
   _cost:static       — session-level cost detail (evidence JSON: output of the cost engine)
+  _facts:extract     — facts-extraction marker: written for every session ingested by a
+                       facts-aware build (evidence JSON: {"facts": n, "tool_output_tokens_est": m}).
+                       A session without it was ingested before the facts feature — sync backfills
+                       it while the transcript still exists; sessions whose transcripts expired
+                       first stay marker-less forever (analyze reports them as "no facts").
 """
 
 from __future__ import annotations
@@ -28,7 +33,9 @@ from pathlib import Path
 
 from ..errors import PreconditionError
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
+
+FACTS_CID = "_facts:extract"
 
 Migration = Callable[[sqlite3.Connection], None]
 
@@ -52,7 +59,29 @@ def sql_migration(*statements: str) -> Migration:
 # this reason) rather than from transcripts, which may be gone.
 #
 #   MIGRATIONS = {"1": ("2", sql_migration("ALTER TABLE sessions ADD COLUMN model TEXT"))}
-MIGRATIONS: dict[str, tuple[str, Migration]] = {}
+MIGRATIONS: dict[str, tuple[str, Migration]] = {
+    # v2: facts table (self-derivation extraction, SPIKES.md W3).
+    # Existing rows untouched; old sessions get facts backfilled by sync while their
+    # transcripts still exist (needs_update treats a missing _facts:extract marker as stale).
+    "1": (
+        "2",
+        sql_migration(
+            """CREATE TABLE IF NOT EXISTS facts (
+                 session_id    TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                 idx           INTEGER NOT NULL,
+                 kind          TEXT NOT NULL CHECK(kind IN ('search','mapping','chain_read')),
+                 key           TEXT NOT NULL,
+                 raw           TEXT NOT NULL,
+                 tool          TEXT,
+                 tokens_est    INTEGER NOT NULL DEFAULT 0,
+                 occupancy_est INTEGER,
+                 sidechain     INTEGER NOT NULL DEFAULT 0,
+                 confidence    TEXT NOT NULL CHECK(confidence IN ('exact','heuristic')),
+                 PRIMARY KEY (session_id, idx, kind, key)
+               )"""
+        ),
+    ),
+}
 
 
 def _version_num(v: str, where: str) -> int:
@@ -170,7 +199,15 @@ class Store:
         ).fetchone()
         if row is None:
             return True
-        return row["file_mtime"] != repr(mtime) or row["file_size"] != size
+        if row["file_mtime"] != repr(mtime) or row["file_size"] != size:
+            return True
+        # ingested by a pre-facts build → stale while the transcript still exists, so a
+        # plain sync backfills facts (expired sessions never reach here: not discovered)
+        marker = self.conn.execute(
+            "SELECT 1 FROM usages WHERE session_id=? AND component_id=?",
+            (session_id, FACTS_CID),
+        ).fetchone()
+        return marker is None
 
     def has_session(self, session_id: str) -> bool:
         return (
@@ -178,8 +215,10 @@ class Store:
             is not None
         )
 
-    def replace_session(self, session_row: dict, usage_rows: list[dict]) -> None:
-        """Transactional whole-session replacement (re-runs don't double-count, AC3)."""
+    def replace_session(self, session_row: dict, usage_rows: list[dict],
+                        fact_rows: list[dict] | None = None) -> None:
+        """Transactional whole-session replacement (re-runs don't double-count, AC3);
+        the DELETE cascades over usages and facts alike."""
         cur = self.conn.cursor()
         try:
             cur.execute("BEGIN")
@@ -199,6 +238,14 @@ class Store:
                            confidence, evidence)
                        VALUES(:session_id,:component_id,:state,:count,:confidence,:evidence)""",
                     u,
+                )
+            for f in fact_rows or []:
+                cur.execute(
+                    """INSERT INTO facts(session_id, idx, kind, key, raw, tool,
+                           tokens_est, occupancy_est, sidechain, confidence)
+                       VALUES(:session_id,:idx,:kind,:key,:raw,:tool,
+                              :tokens_est,:occupancy_est,:sidechain,:confidence)""",
+                    f,
                 )
             self.conn.commit()
         except sqlite3.DatabaseError:
@@ -238,6 +285,39 @@ class Store:
             f"SELECT * FROM usages WHERE session_id IN ({qs})", session_ids
         ).fetchall()
 
+    def facts_for_sessions(self, session_ids: list[str]) -> list[sqlite3.Row]:
+        if not session_ids:
+            return []
+        qs = ",".join("?" * len(session_ids))
+        return self.conn.execute(
+            f"SELECT * FROM facts WHERE session_id IN ({qs}) ORDER BY session_id, idx",
+            session_ids,
+        ).fetchall()
+
+    def facts_coverage(self, session_ids: list[str]) -> tuple[set[str], int]:
+        """(sessions whose facts were extracted, Σ tool-output token estimate over them).
+
+        Extraction is marked by the _facts:extract usage row; sessions ingested before
+        the facts feature whose transcripts already expired can never be backfilled —
+        they count in the window but not in the facts coverage."""
+        if not session_ids:
+            return set(), 0
+        qs = ",".join("?" * len(session_ids))
+        covered: set[str] = set()
+        tool_output = 0
+        for r in self.conn.execute(
+            f"SELECT session_id, evidence FROM usages"
+            f" WHERE component_id=? AND session_id IN ({qs})",
+            [FACTS_CID, *session_ids],
+        ):
+            covered.add(r["session_id"])
+            try:
+                d = json.loads(r["evidence"] or "{}")
+            except json.JSONDecodeError:
+                d = {}
+            tool_output += int(d.get("tool_output_tokens_est") or 0)
+        return covered, tool_output
+
     def snapshot(self) -> list[tuple]:
         """For testing: snapshot of all DB content (excluding timestamps like parsed_at)."""
         rows = []
@@ -249,6 +329,11 @@ class Store:
         for r in self.conn.execute(
             "SELECT session_id, component_id, state, count, confidence, evidence"
             " FROM usages ORDER BY session_id, component_id, state"
+        ):
+            rows.append(tuple(r))
+        for r in self.conn.execute(
+            "SELECT session_id, idx, kind, key, raw, tool, tokens_est, occupancy_est,"
+            " sidechain, confidence FROM facts ORDER BY session_id, idx, kind, key"
         ):
             rows.append(tuple(r))
         return rows

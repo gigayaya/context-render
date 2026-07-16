@@ -1,6 +1,6 @@
 [project]
 name = "context-render"
-version = "0.1.0"
+version = "0.2.0"
 description = "Context window observability for Claude Code: see which of your scaffolding components an agent actually used"
 readme = "README.md"
 requires-python = ">=3.11"

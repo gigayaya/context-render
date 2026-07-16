@@ -10,5 +10,6 @@ Pure-function renderers over the intermediate aggregate object — terminal and 
 | `charts.py` | CJK-safe display width (`display_width`/`pad_to`/`truncate_display` — never `len()`), bar/histogram drawing | Any alignment/width or chart-drawing work |
 | `context_map.py` | Context-window map; worked ASCII example in the module docstring; the two bars share one column mapping and cross-reference timeline row numbers | Changing the map's geometry or labels |
 | `render_md.py` | Markdown renderer; reuses `render_term` line builders; `_fence()` sizes fences longer than any backtick run | Changing markdown file output |
+| `selfderive.py` | Self-derivation aggregation shared by `analyze` and the session SELF-DERIVATION block (same grouping, different scope/columns); `--emit-prompt` evidence bundle (plain text, never recommends a scaffold form) | Changing analyze output or the emit-prompt text |
 | `render_term.py` | Terminal renderer; `session_lines`/`window_lines` shared with md; fixed `WRAP_WIDTH = 96` (not live terminal width) | Adding or altering report lines/sections |
 | `timeline.py` | Timeline assembly and row rendering; action-tag colors (read=blue, edit/write=yellow, bash=magenta) | Changing timeline rows or format |

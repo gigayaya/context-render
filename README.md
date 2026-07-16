@@ -36,6 +36,7 @@ Once you have some history:
 ```bash
 context-render report --since 30d      # cross-session aggregate: active / low-use / deadweight
 context-render deadweight --since 90d  # deadweight focus: token totals, share, cost estimate
+context-render analyze --since 30d     # self-derivation cost: what the agent had to go find itself
 ```
 
 ## What a session report looks like
@@ -53,6 +54,8 @@ Every session report (`last` / `sessions <id-prefix>`) has three views of the sa
 **Context-window map** — when tokens entered the window and what put them there: injected loads (▼) above, your actions (▲) below, numbers linking each bar back to its timeline row, and cumulative window occupancy along the bottom:
 
 ![Context-window map: injected loads vs. actions over time, with window occupancy](docs/images/context_window.png)
+
+The report closes with a **SELF-DERIVATION** block — the top information needs the agent answered itself (searches, repo-structure mapping) with their token and window-occupancy cost; `analyze` aggregates the same rows across sessions.
 
 See [docs/reports.md](docs/reports.md) for how to read each view in detail.
 
@@ -72,6 +75,7 @@ context-render last        [--md] [--evidence] [--full] [--no-timeline] [--no-gr
 context-render sessions    [<id-prefix>] [--since <spec>] [--md] [--evidence] [--full] [--no-timeline] [--no-graph]
 context-render report      [--since 30d] [--md] [--no-timeline] [--no-graph]
 context-render deadweight  [--since 90d] [--no-graph] [--md]
+context-render analyze     [--since 30d] [--md] [--emit-prompt <#|key>]
 context-render clear       [--yes]
 context-render remove-hook
 context-render help
@@ -85,6 +89,7 @@ context-render help
 | `sessions` | List ingested sessions; `sessions <id-prefix>` shows any one session's full report |
 | `report` | Cross-session aggregate over a time window |
 | `deadweight` | Components that never got used in the window, with token/cost share |
+| `analyze` | Self-derivation cost: every agent search is a question the harness didn't answer — what the agent went after, grouped and sorted by token cost. `--emit-prompt` packs one row's evidence into a scaffold-drafting prompt (plain text, offline) |
 | `clear` | Delete recorded data (db + reports); manifest/config are kept. `sync` only rebuilds sessions whose transcripts still exist — `clear` names the ones that would be lost for good |
 | `remove-hook` | Remove the SessionEnd hook that `init --hook` installed (other settings untouched) |
 

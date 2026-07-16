@@ -39,3 +39,18 @@ Per the subagent observability-gap investigation: 3 real sessions in this repo (
 - Sidechain events are merged into the parent session's event stream: merged by timestamp (lines missing ts are fill-forwarded, in-file order preserved), idx renumbered over the merged stream; without sidechain files idx stays the original file line number (single-file evidence refs unchanged).
 - Window-separation principle: each subagent has its own context window — sidechain assistant usage does not enter context samples, its file reads do not enter file loads (context injection order), and it is not drawn on the context map; but component three-state attribution is still recorded (evidence carries a `[subagent:<agentType>]` tag), the timeline still lists it (same tag), and cost and total tokens still count it (real spend).
 - File freshness: SessionFile.mtime = max over the main file + all sidechain files, size = sum over the set → a late-arriving subagent file (e.g. a background agent) automatically triggers re-ingest of that session, no --force needed.
+
+# Spike verdict record (W3, 2026-07-16)
+
+Per the `analyze` self-derivation-cost design: two dry-run rounds over 68 files / 67 sessions / 7 projects on this machine. The design was rewritten by this data before implementation.
+**Once recorded, a verdict is frozen; overturning one later is a change-management event.**
+
+| # | Item | Verdict | Basis (observed shape) |
+|---|---|---|---|
+| 14 | Cross-session repeated keyword searches | **Thin** | After removing extraction contamination (`find -prune` exclusion arguments, pipeline-filter greps) only single digits / a few thousand tokens remained. Must not be the headline; `analyze` instead lists every information need sorted by cost, with no cross-session-repetition requirement |
+| 15 | Manual follow-up invocations (user typing /command after describing the task for several turns) | **0 occurrences in the local corpus** | Automatic triggering is healthy (superpowers-family skills auto-triggered 8/4/4/3 times). Detector removed from `analyze` |
+| 16 | Repeated bash sequences → scaffold candidates | **Weak** | Catches were mostly already-documented routine (pytest, git status). Detector removed from `analyze` |
+| 17 | Guidance-strength contrast | Suggestive, not conclusive (n=1) | Large unfamiliar repo without a harness ≈ 14.5 searches/session vs 2–3.5 in projects with one. Intra-session rummaging is the bulk, supporting verdict #14's reframing |
+| 18 | Repo-structure mapping ritual | **Largest repeated action** | `find -type d` in 15 sessions / 18 times, plus `ls` chains. Becomes the first action-row detector (`repo layout`) |
+| 19 | Extraction contamination cases | Direct basis for decontamination rules | `find -path '*/node_modules*' -prune` and `\| grep -v ".git/"` were misread as keywords. Rules: `grep -v` segments excluded; mid-pipeline path-less non-recursive greps are filters, excluded; `find` `-path`/`-prune`-related arguments never produce keywords. Locked in by regression tests |
+| 20 | Search channel coverage | Local Grep/Glob tool calls = 0 (all searching goes through Bash); only 1 subagent sidechain file in the corpus | Detection must cover both the tool-call path and the bash path |

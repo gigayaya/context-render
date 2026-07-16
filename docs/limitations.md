@@ -13,6 +13,7 @@ Read these before making any delete decisions.
 9. **Cost estimation is approximate**: static context overhead is amortized per turn at the ratio `r_t = S/C_t`; `subscription` accounts show no dollar amounts (marginal cost is zero, so showing it would mislead), only tokens and share.
 10. **Compaction observation**: identified from known event shapes (`compact_boundary` / `isCompactSummary`); if your Claude Code version records it in a different shape, the timeline won't show a compaction row.
 11. **Version support matrix**: 2.1.x (sampled 2.1.156–2.1.207). Other versions get a warning + best-effort parsing, with all attribution marked heuristic; unknown event types don't crash — they're counted, skipped, and marked `degraded`.
+12. **Self-derivation detection under-counts, and its occupancy is an estimate**: known false negatives — searches run indirectly (inside scripts, `xargs`, `find -exec`, interpreters), search commands with unbalanced quotes (dropped, zero-false-positive priority), reading files as a search substitute, and web/docs lookups. Exclusion-shaped commands (`grep -v`, pipeline-filter greps, `find -path`/`-prune`/`-not` arguments) are deliberately not counted. The `window~` column is always heuristic: `tokens × remaining assistant turns` (cut at the next compaction) is a proxy for context-window occupancy, not a measurement — left blank when it can't be computed. Facts are extracted at ingest; sessions whose transcripts expired before extraction can never be backfilled ("facts: N of M" in `analyze` discloses the coverage).
 
 ## Privacy
 
