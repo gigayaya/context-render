@@ -10,10 +10,10 @@
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m pytest                    # run tests (pythonpath configured in pyproject)
 .venv/bin/ruff check context_render tests    # lint (line-length 100, py311)
-PYTHONPATH="$PWD" .venv/bin/context-render …  # run the CLI during development
+PYTHONPATH="$PWD" .venv/bin/ctxr …  # run the CLI during development
 ```
 
-On some macOS setups the editable install's `.pth` file gets a hidden chflag and `site.py` skips it, so `.venv/bin/context-render` fails with `ModuleNotFoundError`. Always prefix with `PYTHONPATH="$PWD"` — do not try to reinstall or `chflags` your way out.
+On some macOS setups the editable install's `.pth` file gets a hidden chflag and `site.py` skips it, so `.venv/bin/ctxr` fails with `ModuleNotFoundError`. Always prefix with `PYTHONPATH="$PWD"` — do not try to reinstall or `chflags` your way out.
 
 ## Architecture
 
@@ -24,6 +24,7 @@ Data flow: `cli.py` (typer) → `pipeline.py` (scan orchestration) → subpackag
 - `attributor/` — maps transcript events to components (R/L/I) via `rules.py` + `bash_heuristics.py`
 - `store/` — SQLite persistence (`schema.sql` ships as package data)
 - `report/` — terminal + markdown renderers, timeline, context-window map
+- `guidance/` — static guidance-graph reachability (`coverage`): format-neutral path-reference extraction + closure; W5 verdicts frozen in SPIKES.md
 - `cost.py` — token/cost estimates from `message.usage` (built-in price table, config-overridable)
 
 Every attribution carries a confidence: **exact** (observed marker in the transcript) or **heuristic** (best-effort inference). Keep the distinction — never promote a heuristic to exact without transcript evidence.

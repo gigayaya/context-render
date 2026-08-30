@@ -110,6 +110,18 @@ def test_command_prefix_fallback(tmp_path, fake_repo):
     assert _agg(att, "command:release", "invoked") is not None
 
 
+def test_quoted_command_marker_is_not_an_invocation(tmp_path, fake_repo):
+    """Regression: the marker is exact only when it IS the message (anchored at the
+    start, the observed spike #4 shape) — a user pasting a transcript line that merely
+    contains one (dogfooding this very tool) must not be credited as an invocation."""
+    cwd = str(fake_repo)
+    lines = [user_text(
+        0, cwd,
+        "why does the timeline show <command-name>/release</command-name> twice?")]
+    att, _ = _attribute(tmp_path, fake_repo, lines)
+    assert _agg(att, "command:release", "invoked") is None
+
+
 def _read_skill_md_lines(fake_repo):
     cwd = str(fake_repo)
     skill_md = f"{fake_repo}/.claude/skills/db-migrate/SKILL.md"
@@ -139,7 +151,7 @@ def test_read_skill_md_ambiguous_twin_credits_both(tmp_path, fake_repo):
 
 def test_namespaced_command_invokes_only_its_namespace(tmp_path, fake_repo):
     """Regression: same-leaf commands in different namespaces were both keyed on the stem,
-    so invoking one credited the other too — hiding it from the deadweight list."""
+    so invoking one credited the other too — hiding it from the unused list."""
     cmds = fake_repo / ".claude" / "commands"
     (cmds / "frontend").mkdir()
     (cmds / "backend").mkdir()
@@ -216,7 +228,7 @@ def test_same_named_skills_do_not_collapse(tmp_path, fake_repo):
 
 def test_ambiguous_skill_name_credits_every_candidate_heuristically(tmp_path, fake_repo):
     """A bare name cannot say which same-named skill ran: credit both, and say it is a guess —
-    better than crediting one arbitrarily and reporting the other as permanent deadweight."""
+    better than crediting one arbitrarily and reporting the other as permanently unused."""
     twin = _plugin_twin(fake_repo, "db-migrate", "someplugin")
     cwd = str(fake_repo)
     lines = [

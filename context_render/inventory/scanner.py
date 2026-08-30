@@ -20,6 +20,10 @@ from .tokens import estimate_tokens
 
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".context-render", "dist", "build"}
 
+# _dedupe id suffixes (`@provenance` or `@provenance-N`), recognized when re-deriving a
+# component name from an old manifest that predates the explicit `name` field
+_DEDUPE_SUFFIX_RE = re.compile(r"@(?:local|global|plugin)(?:-\d+)?$")
+
 STATES = {  # A2.2 three-state applicability matrix
     "skill": ["registered", "loaded", "invoked"],
     "command": ["registered", "invoked"],
@@ -59,14 +63,8 @@ class Component:
             return self.tokens_meta_est or 0
         return self.tokens_est or 0 if self.context == "static" else 0
 
-    @property
-    def dead_weight_tokens(self) -> int:
-        if self.type == "skill":
-            return (self.tokens_meta_est or 0) + (self.tokens_body_est or 0)
-        return self.tokens_est or 0
-
     def to_yaml_dict(self) -> dict:
-        d: dict = {"id": self.id, "type": self.type}
+        d: dict = {"id": self.id, "type": self.type, "name": self.name}
         if self.path:
             d["path"] = self.path
         if self.source:
@@ -96,11 +94,17 @@ class Component:
     @classmethod
     def from_yaml_dict(cls, d: dict) -> "Component":
         cid = str(d.get("id", ""))
-        name = cid.split(":", 1)[1] if ":" in cid else cid
+        name = d.get("name")
+        if not name:
+            # manifests written before the explicit name field: re-derive from the id,
+            # stripping the _dedupe provenance suffix — attribution matches by name
+            # (rules._index), so `skill:x@plugin` must round-trip to name `x`, not `x@plugin`
+            name = cid.split(":", 1)[1] if ":" in cid else cid
+            name = _DEDUPE_SUFFIX_RE.sub("", name)
         return cls(
             id=cid,
             type=str(d.get("type", "file")),
-            name=name,
+            name=str(name),
             context=str(d.get("context", "dynamic")),
             provenance=str(d.get("provenance", "local")),
             path=d.get("path"),
@@ -397,12 +401,19 @@ def _scan_plugins(repo_root: Path) -> list[Component]:
 
 
 def _dedupe(components: list[Component]) -> list[Component]:
-    """On id collision, suffix with provenance to disambiguate (e.g. a local and a plugin skill with the same name)."""
+    """On id collision, suffix with provenance to disambiguate (e.g. a local and a plugin skill
+    with the same name); a third same-provenance collision (two plugins shipping the same
+    command) gets a counter, so ids stay unique and usage rows never conflate."""
     seen: dict[str, Component] = {}
     out = []
     for c in components:
         if c.id in seen:
-            c.id = f"{c.id}@{c.provenance}"
+            cand = f"{c.id}@{c.provenance}"
+            n = 2
+            while cand in seen:
+                cand = f"{c.id}@{c.provenance}-{n}"
+                n += 1
+            c.id = cand
         seen[c.id] = c
         out.append(c)
     return out
@@ -441,7 +452,7 @@ def load_manifest(repo_root: Path) -> list[Component]:
     path = manifest_path(repo_root)
     if not path.is_file():
         raise PreconditionError(
-            f"manifest not found ({path}); run context-render init first"
+            f"manifest not found ({path}); run ctxr init first"
         )
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     comps = [Component.from_yaml_dict(d) for d in data.get("components") or []]

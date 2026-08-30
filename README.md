@@ -20,22 +20,23 @@ cd context-render
 pip install .
 ```
 
-Either way you get the `context-render` command on your PATH.
+Either way you get the `ctxr` command on your PATH.
 
 ## Quickstart
 
 ```bash
 cd your-repo
-context-render init           # scan scaffolds → .context-render/manifest.yaml
-context-render sync           # ingest past sessions (idempotent, safe to re-run)
-context-render last           # latest session: what was loaded/invoked, full timeline
+ctxr init           # scan scaffolds → .context-render/manifest.yaml
+ctxr sync           # ingest past sessions (idempotent, safe to re-run)
+ctxr last           # latest session: what was loaded/invoked, full timeline
 ```
 
 Once you have some history:
 
 ```bash
-context-render report --since 30d      # cross-session aggregate: active / low-use / deadweight
-context-render deadweight --since 90d  # deadweight focus: token totals, share, cost estimate
+ctxr report --since 30d      # cross-session aggregate: active / low-use / unused
+ctxr analyze --since 30d     # self-derivation cost: what the agent had to go find itself
+ctxr coverage                # static: can the agent even reach your files from root CLAUDE.md?
 ```
 
 ## What a session report looks like
@@ -54,27 +55,46 @@ Every session report (`last` / `sessions <id-prefix>`) has three views of the sa
 
 ![Context-window map: injected loads vs. actions over time, with window occupancy](docs/images/context_window.png)
 
+The report closes with a **SELF-DERIVATION** block — the top information needs the agent answered itself (searches, repo-structure mapping) with their token and window-occupancy cost; `analyze` aggregates the same rows across sessions.
+
 See [docs/reports.md](docs/reports.md) for how to read each view in detail.
 
-## Typical workflow
+## Guidance reachability
 
-- **After a task**: run `last`. Expected a skill to fire but it never shows `L`? Its description/trigger never matched — fix it, verify on the next task.
-- **Weekly**: run `report --since 30d`, review the deadweight list, delete dead components, rewrite low-use ones.
+`ctxr coverage` is the one static view — no transcripts needed. It walks resolvable references from root CLAUDE.md and reports which files and Python symbols the agent can reach (and in how many hops), plus stale references whose targets no longer exist:
+
+![Guidance reachability: reachable file/symbol counts, hop depth, stale references](docs/images/coverage.png)
+
+## The iteration loop
+
+Writing scaffolds without observability is shooting without watching the rim: you rewrite a skill's description and never learn whether the next task triggered it. context-render closes that loop:
+
+1. **Write** a skill (or command, subagent, CLAUDE.md).
+2. **Run** a real task in Claude Code.
+3. **Check**: `ctxr last` — stuck at `R` (never loaded)? The description/trigger never matched. Stuck at `L` (loaded, never invoked)? The content didn't earn a use. A `STALE COPIES` row that never re-read? The world changed and the agent didn't know (see [docs/staleness.md](docs/staleness.md)).
+4. **Fix** the trigger or the content, run the next task.
+5. **Verify the fix landed**: run `last` on the next session, or `report --since 30d` to see the component's state across recent sessions.
+
+The loop stays inside "did it fire". Whether the scaffold made the output *better* is an eval question, and evals belong to the scaffold's author — this tool's job is to make the firing observable.
+
+- **After a task**: run `last`.
+- **Weekly**: run `report --since 30d`, review unused components, delete or rewrite low-use ones.
 
 Before deleting anything, read [docs/limitations.md](docs/limitations.md) — used ≠ useful, and low use may just mean no relevant task came up in the window.
 
 ## Commands
 
 ```
-context-render init        [--refresh] [--yes] [--hook|--no-hook]
-context-render sync        [--since <spec>] [--force]
-context-render last        [--md] [--evidence] [--full] [--no-timeline] [--no-graph]
-context-render sessions    [<id-prefix>] [--since <spec>] [--md] [--evidence] [--full] [--no-timeline] [--no-graph]
-context-render report      [--since 30d] [--md] [--no-timeline] [--no-graph]
-context-render deadweight  [--since 90d] [--no-graph] [--md]
-context-render clear       [--yes]
-context-render remove-hook
-context-render help
+ctxr init        [--refresh] [--yes] [--hook|--no-hook]
+ctxr sync        [--since <spec>] [--force]
+ctxr last        [--md] [--evidence] [--full] [--no-timeline] [--no-graph]
+ctxr sessions    [<id-prefix>] [--since <spec>] [--md] [--evidence] [--full] [--no-timeline] [--no-graph]
+ctxr report      [--since 30d] [--md] [--no-timeline] [--no-graph]
+ctxr analyze     [--since 30d] [--md] [--emit-prompt <#|key>]
+ctxr coverage    [--md]
+ctxr clear       [--yes]
+ctxr remove-hook
+ctxr help
 ```
 
 | Command | What it does |
@@ -83,10 +103,11 @@ context-render help
 | `sync` | Parse past transcripts into the local db (idempotent; `--force` rebuilds) |
 | `last` | Report the most recent finished session |
 | `sessions` | List ingested sessions; `sessions <id-prefix>` shows any one session's full report |
-| `report` | Cross-session aggregate over a time window |
-| `deadweight` | Components that never got used in the window, with token/cost share |
+| `report` | Cross-session aggregate over a time window: per-component status (active / low-use / unused / MISS), daily activity, cost estimate |
+| `analyze` | Self-derivation cost: every agent search is a question the harness didn't answer — what the agent went after, grouped and sorted by token cost. `--emit-prompt` packs one row's evidence into a scaffold-drafting prompt (plain text, offline) |
+| `coverage` | Static guidance reachability: which files and Python symbols the agent can reach from root CLAUDE.md by following references, vs only by grepping — no transcripts needed; joins `analyze` facts when a db exists |
 | `clear` | Delete recorded data (db + reports); manifest/config are kept. `sync` only rebuilds sessions whose transcripts still exist — `clear` names the ones that would be lost for good |
-| `remove-hook` | Remove the SessionEnd hook that `init --hook` installed (other settings untouched) |
+| `remove-hook` | Remove the SessionEnd hook that `init --hook` installed, including hooks written before the `ctxr` rename (other settings untouched) |
 
 Common flags:
 

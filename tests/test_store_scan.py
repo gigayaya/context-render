@@ -1,5 +1,6 @@
 """scan idempotency (AC3): re-running on same data gives equal DB snapshot; mtime change triggers update."""
 
+import json
 import os
 import time
 from datetime import datetime, timezone
@@ -8,6 +9,7 @@ from context_render.config import Config
 from context_render.inventory.scanner import scan_components, write_manifest
 from context_render.pipeline import parse_since, scan_repo
 from context_render.store import Store
+from context_render.store.db import FACTS_CID, STALE_CID
 
 
 # ---- parse_since: --since is documented as local timezone; explicit offsets must win ----
@@ -85,6 +87,7 @@ def test_internal_rows_written(fake_repo, fake_projects):
     ids = {r["component_id"] for r in rows}
     assert "_event:git_commit" in ids
     assert "_cost:static" in ids
+    assert "_facts:extract" in ids  # facts-extraction marker (coverage + backfill trigger)
 
 
 def test_no_timestamp_session_visible_in_windowed_query(fake_repo, fake_projects):
@@ -180,3 +183,88 @@ def test_sidechain_files_scanned_and_freshness_tracked(fake_repo, fake_projects)
     ).fetchone()
     st.close()
     assert "[subagent:code-reviewer]" in row["evidence"]
+
+
+def _minimal_session_row(sid="s1"):
+    return {
+        "id": sid, "project": "p", "path": "/gone.jsonl",
+        "started_at": "2026-08-01T00:00:00+00:00", "ended_at": None,
+        "turns": 1, "cost_usd": None, "prompt_digest": None, "cc_version": "2.1.207",
+        "parse_status": "ok", "file_mtime": repr(1.0), "file_size": 10,
+        "parsed_at": "2026-08-01T00:00:00+00:00",
+    }
+
+
+def _marker(sid, cid, extractor):
+    return {"session_id": sid, "component_id": cid, "state": "invoked", "count": 0,
+            "confidence": "heuristic",
+            "evidence": json.dumps({"extractor": extractor})}
+
+
+def test_stale_rows_roundtrip_and_marker_gate(tmp_path):
+    from context_render.attributor.facts import FACTS_EXTRACTOR_VERSION
+    from context_render.attributor.stale import STALE_EXTRACTOR_VERSION
+
+    store = Store(tmp_path / "db.sqlite")
+    try:
+        stale = [{
+            "session_id": "s1", "window_side": 0, "window_agent": "",
+            "path": "a.md", "read_idx": 0, "mutate_idx": 2, "mutate_tool": "Edit",
+            "close_idx": None, "outcome": "never-re-read",
+            "read_tokens_est": 100, "read_partial": 0, "confidence": "exact",
+        }]
+        store.replace_session(
+            _minimal_session_row(),
+            [_marker("s1", FACTS_CID, FACTS_EXTRACTOR_VERSION),
+             _marker("s1", STALE_CID, STALE_EXTRACTOR_VERSION)],
+            [], stale)
+        rows = store.stale_for_sessions(["s1"])
+        assert len(rows) == 1 and rows[0]["path"] == "a.md"
+        assert rows[0]["outcome"] == "never-re-read" and rows[0]["close_idx"] is None
+
+        # both markers current → no update needed
+        assert store.needs_update("s1", 1.0, 10, FACTS_EXTRACTOR_VERSION,
+                                  STALE_EXTRACTOR_VERSION) is False
+        # stale extractor bumped → stale again
+        assert store.needs_update("s1", 1.0, 10, FACTS_EXTRACTOR_VERSION,
+                                  STALE_EXTRACTOR_VERSION + 1) is True
+        # stale check opted out (0) → old behavior
+        assert store.needs_update("s1", 1.0, 10, FACTS_EXTRACTOR_VERSION) is False
+
+        # idempotent replace: cascade clears stale rows too
+        store.replace_session(_minimal_session_row(), [], [], [])
+        assert store.stale_for_sessions(["s1"]) == []
+    finally:
+        store.close()
+
+
+def test_scan_writes_stale_marker_and_stale_rows(fake_repo, fake_projects, tmp_path):
+    """rich fixture has no stale pattern → 0 rows but the marker must land,
+    and needs_update must go quiet afterwards (backfill semantics)."""
+    from context_render.attributor.facts import FACTS_EXTRACTOR_VERSION
+    from context_render.attributor.stale import STALE_EXTRACTOR_VERSION
+    from context_render.config import Config
+    from context_render.pipeline import scan_repo
+    from context_render.store import STALE_CID, Store
+
+    _prep(fake_repo)
+    db = tmp_path / "db.sqlite"
+    store = Store(db)
+    try:
+        scan_repo(fake_repo, Config(), store=store, projects_dir=fake_projects)
+        sid = "11111111-aaaa-bbbb-cccc-000000000001"
+        marker = store.conn.execute(
+            "SELECT evidence FROM usages WHERE session_id=? AND component_id=?",
+            (sid, STALE_CID)).fetchone()
+        assert marker is not None
+        import json
+        assert json.loads(marker["evidence"])["extractor"] == STALE_EXTRACTOR_VERSION
+        assert store.stale_for_sessions([sid]) == []
+        row = store.conn.execute(
+            "SELECT file_mtime, file_size FROM sessions WHERE id=?", (sid,)).fetchone()
+        import ast
+        assert store.needs_update(sid, ast.literal_eval(row["file_mtime"]),
+                                  row["file_size"], FACTS_EXTRACTOR_VERSION,
+                                  STALE_EXTRACTOR_VERSION) is False
+    finally:
+        store.close()

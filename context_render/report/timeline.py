@@ -91,6 +91,9 @@ def render_timeline_lines(timeline: list[dict], max_lines: int | None = None,
             lines.append(f"{pre}{style.bold('session end')}{'':26}{e.get('detail', '')}")
         elif kind == "compaction":
             lines.append(f"{pre}{style.magenta('⟐  compaction')}")
+        elif kind == "stale_open":
+            mark = style.dim(" ~") if e.get("confidence") == "heuristic" else ""
+            lines.append(f"{pre}{style.yellow(pad_to('[S]', 8))}{e.get('detail', '')}{mark}")
         elif kind == "file_read":
             mark = style.dim(" ~") if e.get("confidence") == "heuristic" else ""
             lines.append(f"{pre}{style.blue(pad_to('[read]', 8))}{e.get('detail', '')}{mark}")

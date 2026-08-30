@@ -59,11 +59,3 @@ def compute_session_cost(events: list[Event], static_tokens_s: int,
         detail.cost_usd = round(total, 6)
         detail.static_cost_usd = round(static_total, 6)
     return detail
-
-
-def deadweight_cost(window_static_cost: float | None, deadweight_tokens: int,
-                    static_tokens_s: int) -> float | None:
-    """Deadweight cost = window static spend total × (deadweight tokens / S)."""
-    if window_static_cost is None or static_tokens_s <= 0:
-        return None
-    return round(window_static_cost * (deadweight_tokens / static_tokens_s), 6)

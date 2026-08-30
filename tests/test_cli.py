@@ -60,11 +60,37 @@ def test_hookinstall_idempotent(fake_repo):
     data = json.loads((fake_repo / ".claude" / "settings.json").read_text(encoding="utf-8"))
     groups = data["hooks"]["SessionEnd"]
     cmds = [h["command"] for g in groups for h in g["hooks"]]
-    assert cmds.count("context-render sync --since 1d") == 1
+    assert cmds.count("ctxr sync --since 1d") == 1
     # existing hooks are not broken
     assert "PreToolUse" in data["hooks"]
     assert hookinstall.uninstall(fake_repo) is True
     assert hookinstall.is_installed(fake_repo) is False
+
+
+def _write_legacy_hook(repo_root):
+    path = repo_root / ".claude" / "settings.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"hooks": {"SessionEnd": [
+        {"hooks": [{"type": "command", "command": "context-render sync --since 1d"}]}
+    ]}}), encoding="utf-8")
+
+
+def test_hookinstall_upgrades_legacy_command(fake_repo):
+    """A hook from before the executable rename is upgraded in place, not duplicated."""
+    _write_legacy_hook(fake_repo)
+    assert hookinstall.is_installed(fake_repo) is True  # legacy counts as installed
+    assert hookinstall.install(fake_repo) is True       # True = upgraded this call
+    data = json.loads((fake_repo / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    cmds = [h["command"] for g in data["hooks"]["SessionEnd"] for h in g["hooks"]]
+    assert cmds == ["ctxr sync --since 1d"]
+    assert hookinstall.install(fake_repo) is False      # now idempotent again
+
+
+def test_hookinstall_uninstall_matches_legacy_command(fake_repo):
+    _write_legacy_hook(fake_repo)
+    assert hookinstall.uninstall(fake_repo) is True
+    data = json.loads((fake_repo / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    assert "SessionEnd" not in data.get("hooks", {})
 
 
 def test_init_yes_takes_hook_prompt_default_no(fake_repo, monkeypatch):
@@ -177,7 +203,7 @@ def test_sessions_without_sync(fake_repo, fake_projects, monkeypatch):
     runner.invoke(app, ["init", "--yes", "--no-hook"])
     r = runner.invoke(app, ["sessions"])
     assert r.exit_code == 0
-    assert "run context-render sync" in r.output
+    assert "run ctxr sync" in r.output
 
 
 def test_clear(fake_repo, fake_projects, monkeypatch):
@@ -213,7 +239,25 @@ def test_clear(fake_repo, fake_projects, monkeypatch):
 def test_help_command():
     r = runner.invoke(app, ["help"])
     assert r.exit_code == 0
-    for cmd in ("init", "sync", "sessions", "last", "report", "deadweight", "clear",
+    for cmd in ("init", "sync", "sessions", "last", "report", "clear",
                 "remove-hook", "help"):
         assert cmd in r.output
     assert "Three states" in r.output
+
+
+def test_init_decline_leaves_no_manifest(tmp_path, monkeypatch):
+    """Regression: the "< 1,000 tokens — continue?" prompt ran AFTER write_manifest, so
+    declining left a manifest behind and the next `init` hit exit 3. Declining must
+    leave the repo exactly as it was."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))  # keep the dev machine's global
+    (tmp_path / "home").mkdir()                         # scaffolds out of the scan
+    (tmp_path / ".git").mkdir()  # near-empty repo → static total < 1000 → prompt fires
+    r = runner.invoke(app, ["init", "--no-hook"], input="n\n")
+    assert r.exit_code == 0, r.output
+    assert not (tmp_path / ".context-render" / "manifest.yaml").exists()
+    r2 = runner.invoke(app, ["init", "--yes", "--no-hook"])  # a later real init still works
+    assert r2.exit_code == 0, r2.output
+    assert (tmp_path / ".context-render" / "manifest.yaml").exists()
+
+

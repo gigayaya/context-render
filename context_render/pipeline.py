@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .attributor import Attribution, attribute
+from .attributor.facts import FACTS_EXTRACTOR_VERSION, FactExtraction, extract_facts
+from .attributor.stale import STALE_EXTRACTOR_VERSION, StaleWindow, extract_stale
 from .config import Config, audit_dir
 from .cost import compute_session_cost
 from .errors import PreconditionError
@@ -16,7 +18,7 @@ from .inventory.scanner import Component, load_manifest
 from .parser import ParsedSession, discover_sessions, parse_file
 from .parser.discovery import SessionFile
 from .parser.versions import is_supported
-from .store import Store
+from .store import FACTS_CID, STALE_CID, Store
 from .store.db import dumps_evidence, now_iso
 
 GIT_COMMIT_CID = "_event:git_commit"
@@ -61,8 +63,47 @@ def open_store(repo_root: Path) -> Store:
     return Store(audit_dir(repo_root) / "db.sqlite")
 
 
+def build_fact_rows(session_id: str, ext: FactExtraction) -> list[dict]:
+    return [
+        {
+            "session_id": session_id,
+            "idx": f.idx,
+            "kind": f.kind,
+            "key": f.key,
+            "raw": f.raw,
+            "tool": f.tool,
+            "tokens_est": f.tokens_est,
+            "occupancy_est": f.occupancy_est,
+            "sidechain": int(f.sidechain),
+            "confidence": f.confidence,
+        }
+        for f in ext.facts
+    ]
+
+
+def build_stale_rows(session_id: str, windows: list[StaleWindow]) -> list[dict]:
+    return [
+        {
+            "session_id": session_id,
+            "window_side": int(w.window_side),
+            "window_agent": w.window_agent,
+            "path": w.path,
+            "read_idx": w.read_idx,
+            "mutate_idx": w.mutate_idx,
+            "mutate_tool": w.mutate_tool,
+            "close_idx": w.close_idx,
+            "outcome": w.outcome,
+            "read_tokens_est": w.read_tokens_est,
+            "read_partial": int(w.read_partial),
+            "confidence": w.confidence,
+        }
+        for w in windows
+    ]
+
+
 def build_rows(parsed: ParsedSession, att: Attribution, components: list[Component],
-               sf: SessionFile, repo_root: Path, config: Config) -> tuple[dict, list[dict]]:
+               sf: SessionFile, repo_root: Path, config: Config,
+               ) -> tuple[dict, list[dict], list[dict], list[dict]]:
     static_s = sum(c.static_tokens for c in components if not c.missing)
     cost = compute_session_cost(parsed.events, static_s, config)
     # no parseable event timestamp → fall back to file mtime, otherwise the NULL
@@ -131,7 +172,45 @@ def build_rows(parsed: ParsedSession, att: Attribution, components: list[Compone
             ),
         }
     )
-    return session_row, usage_rows
+    # self-derivation facts: extracted at ingest because
+    # transcripts expire; the marker row makes "extracted, zero facts" distinguishable
+    # from "never extracted" (facts coverage in analyze)
+    ext = extract_facts(parsed, repo_root)
+    fact_rows = build_fact_rows(parsed.session_id, ext)
+    usage_rows.append(
+        {
+            "session_id": parsed.session_id,
+            "component_id": FACTS_CID,
+            "state": "invoked",
+            "count": len(fact_rows),
+            "confidence": "heuristic",
+            "evidence": json.dumps(
+                {"facts": len(fact_rows),
+                 "tool_output_tokens_est": ext.tool_output_tokens_est,
+                 "extractor": FACTS_EXTRACTOR_VERSION},
+                ensure_ascii=False,
+            ),
+        }
+    )
+    # stale gauge: extracted at ingest for the same reason as facts (transcripts
+    # expire); the marker makes "extracted, zero windows" distinguishable from
+    # "never extracted"
+    stale_rows = build_stale_rows(parsed.session_id, extract_stale(parsed, repo_root))
+    usage_rows.append(
+        {
+            "session_id": parsed.session_id,
+            "component_id": STALE_CID,
+            "state": "invoked",
+            "count": len(stale_rows),
+            "confidence": "heuristic",
+            "evidence": json.dumps(
+                {"stale_windows": len(stale_rows),
+                 "extractor": STALE_EXTRACTOR_VERSION},
+                ensure_ascii=False,
+            ),
+        }
+    )
+    return session_row, usage_rows, fact_rows, stale_rows
 
 
 def scan_repo(repo_root: Path, config: Config, since: str | None = None,
@@ -153,7 +232,9 @@ def scan_repo(repo_root: Path, config: Config, since: str | None = None,
             if since_dt and datetime.fromtimestamp(sf.mtime, tz=timezone.utc) < since_dt:
                 summary.skipped += 1
                 continue
-            if not force and not store.needs_update(sf.session_id, sf.mtime, sf.size):
+            if not force and not store.needs_update(
+                    sf.session_id, sf.mtime, sf.size, FACTS_EXTRACTOR_VERSION,
+                    STALE_EXTRACTOR_VERSION):
                 summary.skipped += 1
                 continue
             existed = store.has_session(sf.session_id)
@@ -166,8 +247,9 @@ def scan_repo(repo_root: Path, config: Config, since: str | None = None,
                         file=sys.stderr,
                     )
                 att = attribute(parsed, components, repo_root)
-                session_row, usage_rows = build_rows(parsed, att, components, sf, repo_root, config)
-                store.replace_session(session_row, usage_rows)
+                session_row, usage_rows, fact_rows, stale_rows = build_rows(
+                    parsed, att, components, sf, repo_root, config)
+                store.replace_session(session_row, usage_rows, fact_rows, stale_rows)
             except Exception as e:
                 # one bad session degrades, it must not abort the whole scan (AC5);
                 # writes are per-session and transactional, so nothing partial lands

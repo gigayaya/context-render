@@ -14,6 +14,12 @@ as unreproducible.
 Internal reserved component ids (underscore-prefixed, excluded from the component list during aggregation):
   _event:git_commit  — number of git commit events in the session (for the hook MISS verdict)
   _cost:static       — session-level cost detail (evidence JSON: output of the cost engine)
+  _facts:extract     — facts-extraction marker: written for every session ingested by a
+                       facts-aware build (evidence JSON: {"facts": n, "tool_output_tokens_est": m}).
+                       A session without it was ingested before the facts feature — sync backfills
+                       it while the transcript still exists; sessions whose transcripts expired
+                       first stay marker-less forever (analyze reports them as "no facts").
+  _stale:extract     — stale-gauge extraction marker (evidence JSON: {"stale_windows": n, "extractor": v}); same backfill semantics as _facts:extract.
 """
 
 from __future__ import annotations
@@ -28,7 +34,10 @@ from pathlib import Path
 
 from ..errors import PreconditionError
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "4"
+
+FACTS_CID = "_facts:extract"
+STALE_CID = "_stale:extract"
 
 Migration = Callable[[sqlite3.Connection], None]
 
@@ -52,7 +61,68 @@ def sql_migration(*statements: str) -> Migration:
 # this reason) rather than from transcripts, which may be gone.
 #
 #   MIGRATIONS = {"1": ("2", sql_migration("ALTER TABLE sessions ADD COLUMN model TEXT"))}
-MIGRATIONS: dict[str, tuple[str, Migration]] = {}
+MIGRATIONS: dict[str, tuple[str, Migration]] = {
+    # v2: facts table (self-derivation extraction, SPIKES.md W3).
+    # Existing rows untouched; old sessions get facts backfilled by sync while their
+    # transcripts still exist (needs_update treats a missing _facts:extract marker as stale).
+    "1": (
+        "2",
+        sql_migration(
+            """CREATE TABLE IF NOT EXISTS facts (
+                 session_id    TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                 idx           INTEGER NOT NULL,
+                 kind          TEXT NOT NULL CHECK(kind IN ('search','mapping','chain_read')),
+                 key           TEXT NOT NULL,
+                 raw           TEXT NOT NULL,
+                 tool          TEXT,
+                 tokens_est    INTEGER NOT NULL DEFAULT 0,
+                 occupancy_est INTEGER,
+                 sidechain     INTEGER NOT NULL DEFAULT 0,
+                 confidence    TEXT NOT NULL CHECK(confidence IN ('exact','heuristic')),
+                 PRIMARY KEY (session_id, idx, kind, key)
+               )"""
+        ),
+    ),
+    # v3: component_digests table (edit-epoch tracking for the since-removed `component`
+    # view). The step is kept verbatim — shipped steps are append-only — and the table
+    # stays in schema.sql so fresh and migrated DBs match; nothing writes it anymore.
+    "2": (
+        "3",
+        sql_migration(
+            """CREATE TABLE IF NOT EXISTS component_digests (
+                 component_id TEXT NOT NULL,
+                 digest       TEXT NOT NULL,
+                 file_mtime   TEXT,
+                 first_seen   TEXT NOT NULL,
+                 PRIMARY KEY (component_id, first_seen)
+               )"""
+        ),
+    ),
+    # v4: stale_windows table (stale gauge, design specs/2026-08-01-stale-gauge-design.md).
+    # Existing rows untouched; old sessions get stale windows backfilled by sync while
+    # their transcripts still exist (needs_update treats a missing _stale:extract marker
+    # as stale).
+    "3": (
+        "4",
+        sql_migration(
+            """CREATE TABLE IF NOT EXISTS stale_windows (
+                 session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                 window_side  INTEGER NOT NULL DEFAULT 0,
+                 window_agent TEXT NOT NULL DEFAULT '',
+                 path         TEXT NOT NULL,
+                 read_idx     INTEGER NOT NULL,
+                 mutate_idx   INTEGER NOT NULL,
+                 mutate_tool  TEXT NOT NULL,
+                 close_idx    INTEGER,
+                 outcome      TEXT NOT NULL CHECK(outcome IN ('re-read','compacted','never-re-read')),
+                 read_tokens_est INTEGER NOT NULL DEFAULT 0,
+                 read_partial INTEGER NOT NULL DEFAULT 0,
+                 confidence   TEXT NOT NULL CHECK(confidence IN ('exact','heuristic')),
+                 PRIMARY KEY (session_id, window_side, window_agent, path, read_idx, mutate_idx)
+               )"""
+        ),
+    ),
+}
 
 
 def _version_num(v: str, where: str) -> int:
@@ -164,13 +234,42 @@ class Store:
 
     # ---- idempotent writes ----
 
-    def needs_update(self, session_id: str, mtime: float, size: int) -> bool:
+    def needs_update(self, session_id: str, mtime: float, size: int,
+                     extractor_version: int, stale_extractor_version: int = 0) -> bool:
         row = self.conn.execute(
             "SELECT file_mtime, file_size FROM sessions WHERE id=?", (session_id,)
         ).fetchone()
         if row is None:
             return True
-        return row["file_mtime"] != repr(mtime) or row["file_size"] != size
+        if row["file_mtime"] != repr(mtime) or row["file_size"] != size:
+            return True
+        # ingested by an older extractor → stale while the transcript still exists;
+        # missing marker = pre-facts build, missing field = W3 build (version 1)
+        marker = self.conn.execute(
+            "SELECT evidence FROM usages WHERE session_id=? AND component_id=?",
+            (session_id, FACTS_CID),
+        ).fetchone()
+        if marker is None:
+            return True
+        try:
+            ev = json.loads(marker["evidence"] or "{}")
+        except json.JSONDecodeError:
+            return True
+        if int(ev.get("extractor") or 1) < extractor_version:
+            return True
+        if stale_extractor_version <= 0:
+            return False  # caller opted out of the stale gate
+        smarker = self.conn.execute(
+            "SELECT evidence FROM usages WHERE session_id=? AND component_id=?",
+            (session_id, STALE_CID),
+        ).fetchone()
+        if smarker is None:
+            return True  # pre-stale build → backfill while the transcript exists
+        try:
+            sev = json.loads(smarker["evidence"] or "{}")
+        except json.JSONDecodeError:
+            return True
+        return int(sev.get("extractor") or 0) < stale_extractor_version
 
     def has_session(self, session_id: str) -> bool:
         return (
@@ -178,8 +277,11 @@ class Store:
             is not None
         )
 
-    def replace_session(self, session_row: dict, usage_rows: list[dict]) -> None:
-        """Transactional whole-session replacement (re-runs don't double-count, AC3)."""
+    def replace_session(self, session_row: dict, usage_rows: list[dict],
+                        fact_rows: list[dict] | None = None,
+                        stale_rows: list[dict] | None = None) -> None:
+        """Transactional whole-session replacement (re-runs don't double-count, AC3);
+        the DELETE cascades over usages, facts and stale_windows alike."""
         cur = self.conn.cursor()
         try:
             cur.execute("BEGIN")
@@ -199,6 +301,24 @@ class Store:
                            confidence, evidence)
                        VALUES(:session_id,:component_id,:state,:count,:confidence,:evidence)""",
                     u,
+                )
+            for f in fact_rows or []:
+                cur.execute(
+                    """INSERT INTO facts(session_id, idx, kind, key, raw, tool,
+                           tokens_est, occupancy_est, sidechain, confidence)
+                       VALUES(:session_id,:idx,:kind,:key,:raw,:tool,
+                              :tokens_est,:occupancy_est,:sidechain,:confidence)""",
+                    f,
+                )
+            for s in stale_rows or []:
+                cur.execute(
+                    """INSERT INTO stale_windows(session_id, window_side, window_agent,
+                           path, read_idx, mutate_idx, mutate_tool, close_idx, outcome,
+                           read_tokens_est, read_partial, confidence)
+                       VALUES(:session_id,:window_side,:window_agent,:path,:read_idx,
+                              :mutate_idx,:mutate_tool,:close_idx,:outcome,
+                              :read_tokens_est,:read_partial,:confidence)""",
+                    s,
                 )
             self.conn.commit()
         except sqlite3.DatabaseError:
@@ -238,6 +358,59 @@ class Store:
             f"SELECT * FROM usages WHERE session_id IN ({qs})", session_ids
         ).fetchall()
 
+    def facts_for_sessions(self, session_ids: list[str]) -> list[sqlite3.Row]:
+        if not session_ids:
+            return []
+        qs = ",".join("?" * len(session_ids))
+        return self.conn.execute(
+            f"SELECT * FROM facts WHERE session_id IN ({qs}) ORDER BY session_id, idx",
+            session_ids,
+        ).fetchall()
+
+    def stale_for_sessions(self, session_ids: list[str]) -> list[sqlite3.Row]:
+        if not session_ids:
+            return []
+        qs = ",".join("?" * len(session_ids))
+        return self.conn.execute(
+            f"SELECT * FROM stale_windows WHERE session_id IN ({qs})"
+            f" ORDER BY session_id, mutate_idx, read_idx, path",
+            session_ids,
+        ).fetchall()
+
+    def usages_for_component(self, component_id: str,
+                            session_ids: list[str]) -> list[sqlite3.Row]:
+        if not session_ids:
+            return []
+        qs = ",".join("?" * len(session_ids))
+        return self.conn.execute(
+            f"SELECT * FROM usages WHERE component_id=? AND session_id IN ({qs})",
+            [component_id, *session_ids],
+        ).fetchall()
+
+    def facts_coverage(self, session_ids: list[str]) -> tuple[set[str], int]:
+        """(sessions whose facts were extracted, Σ tool-output token estimate over them).
+
+        Extraction is marked by the _facts:extract usage row; sessions ingested before
+        the facts feature whose transcripts already expired can never be backfilled —
+        they count in the window but not in the facts coverage."""
+        if not session_ids:
+            return set(), 0
+        qs = ",".join("?" * len(session_ids))
+        covered: set[str] = set()
+        tool_output = 0
+        for r in self.conn.execute(
+            f"SELECT session_id, evidence FROM usages"
+            f" WHERE component_id=? AND session_id IN ({qs})",
+            [FACTS_CID, *session_ids],
+        ):
+            covered.add(r["session_id"])
+            try:
+                d = json.loads(r["evidence"] or "{}")
+            except json.JSONDecodeError:
+                d = {}
+            tool_output += int(d.get("tool_output_tokens_est") or 0)
+        return covered, tool_output
+
     def snapshot(self) -> list[tuple]:
         """For testing: snapshot of all DB content (excluding timestamps like parsed_at)."""
         rows = []
@@ -249,6 +422,17 @@ class Store:
         for r in self.conn.execute(
             "SELECT session_id, component_id, state, count, confidence, evidence"
             " FROM usages ORDER BY session_id, component_id, state"
+        ):
+            rows.append(tuple(r))
+        for r in self.conn.execute(
+            "SELECT session_id, idx, kind, key, raw, tool, tokens_est, occupancy_est,"
+            " sidechain, confidence FROM facts ORDER BY session_id, idx, kind, key"
+        ):
+            rows.append(tuple(r))
+        for r in self.conn.execute(
+            "SELECT session_id, window_side, window_agent, path, read_idx, mutate_idx,"
+            " mutate_tool, close_idx, outcome, read_tokens_est, read_partial, confidence"
+            " FROM stale_windows ORDER BY session_id, mutate_idx, read_idx, path"
         ):
             rows.append(tuple(r))
         return rows

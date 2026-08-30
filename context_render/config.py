@@ -42,8 +42,6 @@ CACHE_READ_MULT = 0.10
 class Config:
     low_use_max_count: int = 2
     billing: str = "subscription"  # api | subscription | auto
-    deadweight_min_sessions: int = 20
-    deadweight_min_window_days: int = 90
     in_progress_minutes: int = 5
     timeline_term_max: int = 40
     graph: bool = True
@@ -69,8 +67,6 @@ def audit_dir(repo_root: Path) -> Path:
 
 _INT_KEYS = (
     "low_use_max_count",
-    "deadweight_min_sessions",
-    "deadweight_min_window_days",
     "in_progress_minutes",
     "timeline_term_max",
     "context_window_tokens",

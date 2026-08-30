@@ -11,10 +11,16 @@ from datetime import datetime
 from pathlib import Path
 
 from ..config import Config
-from .render_term import session_lines, window_lines
+from .render_term import (
+    analyze_lines, coverage_lines, session_lines, window_lines,
+)
 
 TITLES = {"last": "context-render — session report", "report": "context-render — aggregate report",
-          "deadweight": "context-render — deadweight report"}
+          "analyze": "context-render — self-derivation cost",
+          "coverage": "context-render — guidance reachability"}
+
+BODY_FNS = {"last": session_lines, "analyze": analyze_lines,
+            "coverage": coverage_lines}
 
 
 def _fence(body: str) -> str:
@@ -24,7 +30,7 @@ def _fence(body: str) -> str:
 
 
 def render_md(agg: dict, config: Config) -> str:
-    body_fn = session_lines if agg["report_type"] == "last" else window_lines
+    body_fn = BODY_FNS.get(agg["report_type"], window_lines)
     body = "\n".join(body_fn(agg, config, full=True))
     title = TITLES.get(agg["report_type"], "context-render")
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")

@@ -325,8 +325,11 @@ def attribute(parsed: ParsedSession, components: list[Component],
                         _is_boilerplate(att.prompt_digest) and not _is_boilerplate(stripped)
                     ):
                         att.prompt_digest = clean(stripped)[:80]
-                # command marker (A7.2, spike #4 main case exact)
-                m = COMMAND_MARKER_RE.search(text)
+                # command marker (A7.2, spike #4 main case exact). Anchored to the message
+                # start (the observed marker shape): a user message merely *quoting* a
+                # marker mid-text — e.g. pasting a transcript line while dogfooding — must
+                # not count as an exact invocation.
+                m = COMMAND_MARKER_RE.match(text.lstrip())
                 cmd_name = None
                 if m:
                     cmd_name = m.group(1)

@@ -115,6 +115,19 @@ class TestValueFlagFalsePositive:
         # -e supplies the pattern → the first positional is a file, not a pattern to skip
         assert bh.extract_read_paths("grep -e TODO src/x.py", "/repo") == ["/repo/src/x.py"]
 
+    def test_posix_grep_dash_r_is_not_a_value_flag(self):
+        """Regression: rg's -r takes a value (--replace) but POSIX grep's -r is flagless
+        (recursive). Using the shared rg set for grep consumed the pattern as the flag's
+        "value" and then dropped the real file as the presumed pattern — a false negative
+        in one of the most common command shapes (facts.py already forked its set for
+        exactly this hazard; extract_read_paths now picks per command head)."""
+        assert bh.extract_read_paths("grep -r TODO notes.md", "/repo") == ["/repo/notes.md"]
+
+    def test_rg_dash_r_still_consumes_its_replacement_value(self):
+        # for rg, -r REPL must be consumed or REPL shifts into the pattern slot
+        # and the real pattern becomes a candidate path
+        assert bh.extract_read_paths("rg -r new old src/x.py", "/repo") == ["/repo/src/x.py"]
+
     def test_inline_value_unaffected(self):
         # inline forms stay inside the flag token; the positional skip still applies
         assert bh.extract_read_paths("grep -A3 TODO src/x.py", "/repo") == ["/repo/src/x.py"]

@@ -23,11 +23,16 @@ GIT_GLOBAL_FLAGS_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namesp
 # occupies the pattern slot and the real pattern gets harvested as a path — patterns are
 # often existing file names (`grep -A 3 CLAUDE.md notes.txt`), a false positive (AC2a).
 # Inline forms (-A3, --context=3) stay inside the flag token and need no handling.
-GREP_RG_VALUE_FLAGS = {
+# POSIX grep and rg disagree on short flags — rg's -r (--replace) takes a value, POSIX
+# grep's -r (recursive) is flagless — so the sets are kept separate and callers pick by
+# command head; using the rg set for grep would eat the real pattern of `grep -r PAT file`.
+GREP_VALUE_FLAGS = {
     "-A", "-B", "-C", "-m", "-e", "-f", "-d", "-D",
     "--after-context", "--before-context", "--context", "--max-count",
     "--regexp", "--file", "--include", "--exclude", "--exclude-from",
     "--exclude-dir", "--label", "--binary-files", "--directories", "--devices",
+}
+GREP_RG_VALUE_FLAGS = GREP_VALUE_FLAGS | {
     # rg-only
     "-g", "-t", "-T", "-E", "-M", "-j", "-r",
     "--glob", "--iglob", "--type", "--type-not", "--type-add", "--encoding",
@@ -41,10 +46,10 @@ GREP_RG_PATTERN_FLAGS = {"-e", "-f", "--regexp", "--file"}
 COMMIT_RESULT_RE = re.compile(r"\[[^\]]+ [0-9a-f]{7,}\]|files? changed")
 
 
-def split_segments(command: str) -> list[list[str]]:
-    """Tokenize with shlex in punctuation mode, then split into segments on | & ; and
-    unquoted newlines. Unparseable (unbalanced quotes, etc.) → empty list (prefer misses
-    over false positives).
+def split_segments_seps(command: str) -> list[tuple[str, list[str]]]:
+    """Like split_segments, but each segment keeps the separator run that preceded it
+    ("" for the first) — the facts extractor needs to know whether a grep sits mid-pipeline.
+    Unparseable (unbalanced quotes, etc.) → empty list (prefer misses over false positives).
 
     Punctuation mode emits separators as their own tokens even when attached
     (`2>/dev/null; ls` → `2>/dev/null`, `;`, `ls`), and a quoted newline stays inside
@@ -57,19 +62,35 @@ def split_segments(command: str) -> list[list[str]]:
         tokens = list(lex)
     except ValueError:
         return []
-    segments: list[list[str]] = []
+    segments: list[tuple[str, list[str]]] = []
     cur: list[str] = []
+    sep = ""
     for tok in tokens:
         # runs of punctuation arrive as one token ("&&", ";", "&&\n") → all boundaries
         if not set(tok) - SEPARATOR_CHARS:
             if cur:
-                segments.append(cur)
-            cur = []
+                segments.append((sep, cur))
+                cur = []
+            sep = tok
         else:
             cur.append(tok)
     if cur:
-        segments.append(cur)
+        segments.append((sep, cur))
     return segments
+
+
+def is_pipe_sep(sep: str) -> bool:
+    """True when the separator run feeds the previous segment's stdout into the next
+    (`|`, `|&`, possibly wrapped in unquoted newlines); `||` and `&&` are not pipes."""
+    return sep.strip("\n") in ("|", "|&")
+
+
+def split_segments(command: str) -> list[list[str]]:
+    """Tokenize with shlex in punctuation mode, then split into segments on | & ; and
+    unquoted newlines. Unparseable (unbalanced quotes, etc.) → empty list (prefer misses
+    over false positives).
+    """
+    return [argv for _, argv in split_segments_seps(command)]
 
 
 def _is_git_commit_segment(argv: list[str]) -> bool:
@@ -110,13 +131,14 @@ def extract_read_paths(command: str, cwd: str | None) -> list[str]:
         if cmd not in READ_CMDS:
             continue
         is_grep = cmd in {"grep", "rg"}
+        value_flags = GREP_RG_VALUE_FLAGS if cmd == "rg" else GREP_VALUE_FLAGS
         skip_first_nonflag = is_grep
         seen_nonflag = 0
         i = 1
         while i < len(seg):
             tok = seg[i]
             if tok.startswith("-"):
-                if is_grep and tok in GREP_RG_VALUE_FLAGS:
+                if is_grep and tok in value_flags:
                     if tok in GREP_RG_PATTERN_FLAGS:
                         skip_first_nonflag = False
                     i += 2  # consume the flag and its separate value
