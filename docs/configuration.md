@@ -33,9 +33,6 @@ sessions `sync` would not be able to rebuild before asking for confirmation.
 ```yaml
 billing: api            # api | subscription | auto (default subscription; subscription hides dollar amounts)
 low_use_max_count: 2    # low-use threshold
-deadweight_min_sessions: 20
-deadweight_min_window_days: 90
-in_progress_minutes: 5  # cutoff for last to exclude in-progress sessions
 timeline_term_max: 40   # terminal timeline truncation length (--full / --md always complete)
 context_window_tokens: 200000  # occupancy-bar denominator (context window map); set 1000000 for 1M-window models ([1m]) — transcripts don't record the window size, so this is the only way to declare it. A peak above the configured value snaps the denominator up to the next known tier (200k → 1M) automatically.
 prices:                 # override/extend the built-in price table (USD per MTok; keys prefix-match model)
@@ -44,6 +41,6 @@ prices:                 # override/extend the built-in price table (USD per MTok
 
 ## SessionEnd hook
 
-`init` can optionally install a SessionEnd hook (written to the project's `.claude/settings.json`) that automatically runs `context-render sync --since 1d` for a lightweight ingest when a session ends; installation is idempotent. Sessions that terminate abnormally are caught up incrementally by a manual `sync`.
+`init` can optionally install a SessionEnd hook (written to the project's `.claude/settings.json`) that automatically runs `ctxr sync --since 1d` for a lightweight ingest when a session ends; installation is idempotent. A hook written by a release before the executable was renamed (`context-render sync --since 1d`, ≤ 0.1.0) is upgraded in place instead of duplicated. Sessions that terminate abnormally are caught up incrementally by a manual `sync`.
 
-**To remove**: run `context-render remove-hook` (deletes only the entry under `hooks.SessionEnd` whose command is `context-render sync --since 1d`; everything else in `settings.json` is left untouched).
+**To remove**: run `ctxr remove-hook` (deletes only the entries under `hooks.SessionEnd` whose command is `ctxr sync --since 1d` or the legacy `context-render sync --since 1d`; everything else in `settings.json` is left untouched).

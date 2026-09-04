@@ -1,4 +1,4 @@
-"""Test fixtures: synthetic repo + synthetic transcript (shapes based on real observations in SPIKES.md)."""
+"""Test fixtures: synthetic repo + synthetic transcript (shapes based on real transcript observations)."""
 
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ USAGE = {"input_tokens": 1000, "cache_creation_input_tokens": 2000,
 
 def write_sidechain(session_file: Path, agent_id: str, lines: list[dict],
                     agent_type: str | None = None) -> Path:
-    """Write a subagent transcript in the on-disk layout observed in SPIKES.md W2:
+    """Write a subagent transcript in the observed on-disk layout:
     <proj>/<session-id>/subagents/agent-<id>.jsonl, every line isSidechain+agentId,
     plus the sibling .meta.json when agent_type is given."""
     sc_dir = session_file.parent / session_file.stem / "subagents"
@@ -130,7 +130,7 @@ def fake_repo(tmp_path: Path) -> Path:
 def rich_session_lines(fake_repo: Path):
     """Synthetic session covering every type × every state (incl. compaction, git commit, MISS scenarios)."""
     cwd = str(fake_repo)
-    lines = [
+    return [
         _line(0, "file-history-snapshot", cwd, messageId="m0", snapshot={}),
         # command invoked (exact)
         user_text(1, cwd, "<command-name>/release</command-name>\n"
@@ -156,7 +156,7 @@ def rich_session_lines(fake_repo: Path):
         assistant(13, cwd, [tool_use("Edit", {"file_path": f"{fake_repo}/src/api/main.py",
                                               "old_string": "a", "new_string": "b"}, "t6")]),
         tool_result(14, cwd, "t6", "ok"),
-        # compaction (spike #11 known form, self-made fixture)
+        # compaction (known form, self-made fixture)
         _line(15, "system", cwd, subtype="compact_boundary"),
         # hook: PostToolUse triggered (attachment hook_success)
         _line(16, "attachment", cwd,
@@ -176,7 +176,6 @@ def rich_session_lines(fake_repo: Path):
         tool_result(24, cwd, "t10", "# API subdirectory conventions"),
         _line(25, "summary", cwd, summary="Fix retry UI for login page timeout"),
     ]
-    return lines
 
 
 @pytest.fixture

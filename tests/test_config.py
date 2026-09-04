@@ -15,7 +15,7 @@ def _cfg(tmp_path, text):
 
 
 @pytest.mark.parametrize("yaml_text", [
-    "in_progress_minutes: five",
+    "low_use_max_count: five",
     "timeline_term_max: [1]",
     "graph: 3",
     "prices: [a, b]",
@@ -31,7 +31,7 @@ def test_load_config_rejects_bad_types(tmp_path, yaml_text):
 def test_load_config_accepts_valid_overrides(tmp_path):
     cfg = load_config(_cfg(
         tmp_path,
-        "in_progress_minutes: 0\nprices:\n  my-model:\n    input: 1.5\n    output: 6\n",
+        "low_use_max_count: 0\nprices:\n  my-model:\n    input: 1.5\n    output: 6\n",
     ))
-    assert cfg.in_progress_minutes == 0
+    assert cfg.low_use_max_count == 0
     assert cfg.price_for("my-model-123") == {"input": 1.5, "output": 6}

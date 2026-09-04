@@ -1,4 +1,4 @@
-"""Report-layer tests (AC3/AC9): timeline golden, two-form consistency, CJK alignment, MISS, aggregate status."""
+"""Report-layer tests: timeline golden, two-form consistency, CJK alignment, MISS, aggregate status."""
 
 from context_render.attributor import attribute
 from context_render.config import Config
@@ -19,12 +19,15 @@ def _by_prefix(rows, prefix):
 
 
 def _session_agg(tmp_path, fake_repo, rich_session_lines, evidence=False):
+    from context_render.attributor.facts import extract_facts
+
     p = tmp_path / "s.jsonl"
     p.write_text(make_transcript(fake_repo, rich_session_lines), encoding="utf-8")
     parsed = parse_file(p)
     comps = [c for c in scan_components(fake_repo) if c.provenance == "local"]
     att = attribute(parsed, comps, fake_repo)
-    return aggregate_session(parsed, att, comps, Config(), include_evidence=evidence)
+    return aggregate_session(parsed, att, comps, Config(), include_evidence=evidence,
+                             facts=extract_facts(parsed).facts)
 
 
 def test_timeline_golden(tmp_path, fake_repo, rich_session_lines):
@@ -33,7 +36,7 @@ def test_timeline_golden(tmp_path, fake_repo, rich_session_lines):
     kinds = [t["kind"] for t in tl]
     assert kinds[0] == "session_start"
     assert kinds[-1] == "session_end"
-    assert "compaction" in kinds  # self-made fixture serves as golden (spike #11)
+    assert "compaction" in kinds  # self-made fixture serves as golden
     body = render_term(agg, Config())
     assert "⟐  compaction" in body
     assert "session start (cc 2.1.207)" in body
@@ -41,7 +44,7 @@ def test_timeline_golden(tmp_path, fake_repo, rich_session_lines):
 
 
 def test_two_renderers_consistent(tmp_path, fake_repo, rich_session_lines):
-    """Terminal and md forms consistent (AC3): the full md contains every line of the terminal form."""
+    """Terminal and md forms consistent: the full md contains every line of the terminal form."""
     agg = _session_agg(tmp_path, fake_repo, rich_session_lines)
     cfg = Config()
     term = session_lines(agg, cfg, full=False)
@@ -65,7 +68,7 @@ def test_evidence_downdrill(tmp_path, fake_repo, rich_session_lines):
 
 
 def test_unsupported_version_downgrades_session_report(tmp_path, fake_repo, rich_session_lines):
-    """Regression (AB review): the A11 downgrade (unsupported version → all heuristic) applied
+    """Regression (AB review): the unsupported-version downgrade (all heuristic) applied
     only on the DB write path, so `last` showed exact confidence and no warning while
     `report` marked the very same session heuristic."""
     for ln in rich_session_lines:
@@ -91,19 +94,18 @@ def test_window_aggregate_status(fake_repo, fake_projects):
     assert rows["mcp:playwright"]["invoked"] == 2
     assert _by_prefix(rows, "hook:PreToolUse-Bash-")["status"].startswith("☠ never triggered")
     assert _by_prefix(rows, "hook:PreToolUse-Bash-")["miss_count"] == 1
-    # claude_md root is always L → never falls into deadweight
-    assert not rows["claude-md:root"]["status"].startswith("☠")
-    assert agg["deadweight"]["tokens"] >= 0
+    # claude_md root is always L → never lands in "unused"
+    assert rows["claude-md:root"]["status"] != "unused"
     assert agg["window"]["session_count"] == 1
     # built-in hint (MUST): root CLAUDE.md prescription
     assert any("moved into a skill" in h for h in agg["hints"])
     lines = window_lines(agg, cfg, full=True)
-    assert any("Deadweight total" in ln for ln in lines)
+    assert any("Static context" in ln for ln in lines)
 
 
-def test_empty_window_suppresses_deadweight_verdict(fake_repo):
+def test_empty_window_degrades_status_to_no_data(fake_repo):
     """Regression: with zero ingested sessions the report declared every component
-    ☠ deadweight (100%) and persisted that verdict to --md with only a stderr note."""
+    unused and persisted that verdict to --md with only a stderr note."""
     comps = [c for c in scan_components(fake_repo) if c.provenance == "local"]
     cfg = Config()
     store = Store(fake_repo / ".context-render" / "db.sqlite")  # empty: nothing scanned
@@ -113,10 +115,9 @@ def test_empty_window_suppresses_deadweight_verdict(fake_repo):
         store.close()
     assert agg["window"]["session_count"] == 0
     assert all(r["status"] == "no data" for r in agg["components"])
-    assert agg["deadweight"]["tokens"] == 0
-    assert agg["deadweight"]["pct"] == 0.0
     assert not agg["hints"]  # usage hints presume usage data
-    assert any("no ingested sessions" in w for w in agg["warnings"])
+    assert sum("no ingested sessions" in w for w in agg["warnings"]) == 1  # not twice
+    assert agg["self_derivation"] == []
     # the same line builders feed term and --md, so the body itself must carry the warning
     body = "\n".join(window_lines(agg, cfg, full=True))
     assert "no ingested sessions" in body
@@ -181,22 +182,6 @@ def test_daily_histogram_clips_to_width():
     lines = daily_histogram(days, height=3, total_width=40)
     assert any("…" in ln for ln in lines)  # clipping is disclosed
     assert all(display_width(ln) <= 40 for ln in lines)
-
-
-def test_deadweight_focus(fake_repo, fake_projects):
-    comps = [c for c in scan_components(fake_repo) if c.provenance == "local"]
-    write_manifest(fake_repo, comps)
-    cfg = Config()
-    scan_repo(fake_repo, cfg, projects_dir=fake_projects)
-    store = Store(fake_repo / ".context-render" / "db.sqlite")
-    try:
-        agg = aggregate_window(store, comps, cfg, since_iso=None,
-                               since_label="last 90d", deadweight_only=True)
-    finally:
-        store.close()
-    assert all(r["dead"] for r in agg["components"])
-    # window <90d or sessions <20 → widen-observation-window hint (MUST)
-    assert any("widening the observation window" in h for h in agg["hints"])
 
 
 def test_file_loads_order_and_display(tmp_path, fake_repo, rich_session_lines):
@@ -630,3 +615,124 @@ def test_render_timeline_ctx_column():
     assert lines[0].startswith("  1 --:--:--      · ─ session start")
     assert lines[1].startswith("  2 --:--:--    21k ─ [bash]")
     assert lines[2].startswith("  3 --:--:--   1.2M ─ [read]")
+
+
+def _stale_agg(windows, summary, timeline=None, context_samples=None):
+    """Minimal last-report agg for the STALE COPIES block tests."""
+    return {
+        "schema_version": 2, "report_type": "last",
+        "session": {"id": "s", "project": "p", "started_at": None, "turns": 1,
+                    "cost_usd": None, "cc_version": "2.1.207", "parse_status": "ok",
+                    "total_tokens": 0, "compactions": 0},
+        "billing": "subscription", "task_summary": "",
+        "components": [], "file_loads": [],
+        "context_samples": context_samples or [],
+        "timeline": timeline or [], "self_derivation": [],
+        "self_derivation_summary": {"tokens": 0, "pct": None},
+        "static_context": {"total_tokens": 0, "breakdown": []},
+        "warnings": [], "hints": [],
+        "stale_windows": windows, "stale_summary": summary,
+    }
+
+
+def _w(no=1, path="a.md", outcome="never-re-read", close_idx=None,
+      mutate_idx=2, mutate_tool="Edit", confidence="exact", agent=""):
+    return {"no": no, "path": path, "sidechain": bool(agent), "agent": agent,
+            "read_idx": 0, "mutate_idx": mutate_idx, "mutate_tool": mutate_tool,
+            "close_idx": close_idx, "outcome": outcome,
+            "read_tokens_est": 100, "confidence": confidence}
+
+
+def test_stale_section_absent_without_windows_byte_identical():
+    base = _stale_agg([], {"total": 0, "never": 0, "tokens_never": 0})
+    legacy = {k: v for k, v in base.items()
+              if k not in ("stale_windows", "stale_summary")}
+    assert session_lines(base, Config(), full=False) == \
+        session_lines(legacy, Config(), full=False)
+    assert not any("STALE" in ln for ln in session_lines(base, Config(), full=False))
+
+
+def test_stale_section_rows_and_summary():
+    agg = _stale_agg(
+        [_w(1, outcome="never-re-read"),
+         _w(2, path="b.md", outcome="re-read", close_idx=9, mutate_idx=5),
+         _w(3, path="c.md", outcome="compacted", close_idx=7, mutate_idx=6,
+            mutate_tool="sed", confidence="heuristic")],
+        {"total": 3, "never": 1, "tokens_never": 100})
+    out = "\n".join(session_lines(agg, Config(), full=False))
+    assert "STALE COPIES" in out
+    assert "✗ never re-read" in out and "✓ re-read #9" in out and "▣ compacted" in out
+    assert "~" in out  # heuristic mark
+    assert "3 stale windows, 1 never re-read" in out
+
+
+def test_stale_wildcard_rows_fold_into_one_line():
+    agg = _stale_agg(
+        [_w(1, path="a.md", mutate_idx=4, mutate_tool="git pull", confidence="heuristic"),
+         _w(2, path="b.md", mutate_idx=4, mutate_tool="git pull", confidence="heuristic")],
+        {"total": 2, "never": 2, "tokens_never": 200})
+    lines = session_lines(agg, Config(), full=False)
+    folded = [ln for ln in lines if "git pull" in ln]
+    assert len(folded) == 1 and "2 files" in folded[0]
+
+
+def test_stale_wildcard_rereads_fold_without_none_placeholder():
+    agg = _stale_agg(
+        [_w(1, path="a.md", outcome="re-read", close_idx=9,
+            mutate_idx=4, mutate_tool="git pull", confidence="heuristic"),
+         _w(2, path="b.md", outcome="re-read", close_idx=15,
+            mutate_idx=4, mutate_tool="git pull", confidence="heuristic")],
+        {"total": 2, "never": 0, "tokens_never": 0})
+    lines = session_lines(agg, Config(), full=False)
+    folded = [ln for ln in lines if "git pull" in ln]
+    assert len(folded) == 1
+    assert "✓ re-read (varies)" in folded[0]
+    assert "#None" not in folded[0]
+
+
+def test_timeline_renders_stale_open_row():
+    rows = [{"ts": None, "kind": "stale_open", "detail": "S1 a.md · copy read #0 overturned (Edit)",
+             "confidence": "exact", "evidence_ref": 2, "est_tokens": None, "order": "ts"}]
+    out = "\n".join(render_timeline_lines(rows))
+    assert "[S]" in out and "S1 a.md" in out
+
+
+def test_context_map_annotation_when_never_reread():
+    timeline = [{"ts": None, "kind": "action", "tool": "Bash", "detail": "x",
+                 "confidence": "exact", "evidence_ref": 1, "est_tokens": 10,
+                 "transition": None, "component": None, "order": "ts"}]
+    agg = _stale_agg([_w(1)], {"total": 1, "never": 1, "tokens_never": 100},
+                     timeline=timeline)
+    out = "\n".join(session_lines(agg, Config(), full=False))
+    assert "never re-read" in out and "see STALE COPIES" in out
+
+
+def test_aggregate_session_stale_windows_and_closes_annotation(tmp_path, fake_repo):
+    from context_render.attributor.stale import extract_stale
+    from tests.conftest import assistant, tool_result, tool_use
+
+    cwd = str(fake_repo)
+    f = f"{fake_repo}/docs/conventions.md"
+    lines = [
+        assistant(0, cwd, [tool_use("Read", {"file_path": f}, "t1")]),
+        tool_result(1, cwd, "t1", "content"),
+        assistant(2, cwd, [tool_use("Edit", {"file_path": f, "old_string": "a",
+                                             "new_string": "b"}, "t2")]),
+        tool_result(3, cwd, "t2", "ok"),
+        assistant(4, cwd, [tool_use("Read", {"file_path": f}, "t3")]),
+        tool_result(5, cwd, "t3", "content2"),
+    ]
+    p = tmp_path / "s.jsonl"
+    p.write_text(make_transcript(fake_repo, lines), encoding="utf-8")
+    parsed = parse_file(p)
+    comps = scan_components(fake_repo)
+    att = attribute(parsed, comps, fake_repo)
+    stale = extract_stale(parsed, fake_repo)
+    agg = aggregate_session(parsed, att, comps, Config(), stale=stale)
+    assert agg["stale_summary"]["total"] == 1 and agg["stale_summary"]["never"] == 0
+    kinds = [e["kind"] for e in agg["timeline"]]
+    assert "stale_open" in kinds
+    closing = [e for e in agg["timeline"] if "(closes S1)" in (e.get("detail") or "")]
+    assert len(closing) == 1 and closing[0]["evidence_ref"] == 4
+
+

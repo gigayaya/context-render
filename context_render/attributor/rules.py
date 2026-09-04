@@ -1,4 +1,4 @@
-"""Three-state attribution rules (A7).
+"""Three-state attribution rules.
 
 Output: session-level (component_id, state, count, confidence, evidence[])
     + event-level (ts, component, state transition) triples (for the timeline).
@@ -17,7 +17,7 @@ from pathlib import Path
 
 from ..inventory.scanner import Component
 from ..inventory.tokens import estimate_tokens
-from ..parser.loader import Event, ParsedSession, SKILL_BASE_DIR_PREFIX
+from ..parser.loader import SKILL_BASE_DIR_PREFIX, Event, ParsedSession, index_tool_results
 from ..textutil import clean
 from . import bash_heuristics
 
@@ -30,7 +30,7 @@ FILE_EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 
 def _is_boilerplate(text: str) -> bool:
     """system-generated user_msg text (markers, caveat preamble) — not a real prompt."""
-    return text.startswith("<") or text.startswith("Caveat:")
+    return text.startswith(("<", "Caveat:"))
 
 
 def _tag(ev: Event, text: str) -> str:
@@ -140,24 +140,59 @@ class Attribution:
         )
 
 
-def _match_path(comp_path: str | None, target: str, repo_root: Path) -> bool:
-    if not comp_path:
-        return False
-    try:
+class _Resolver:
+    """Session-scoped memo of Path.resolve(): one attribute() pass resolves the same
+    handful of strings (every Bash event's cwd, each component path, each repeated
+    Read target) thousands of times, and resolve() walks the filesystem on every call.
+    Results are cached as strings; exceptions are not cached (the caller keeps its
+    existing except-and-fail-closed behavior)."""
+
+    __slots__ = ("_cache", "repo_root", "root_resolved")
+
+    def __init__(self, repo_root: Path) -> None:
+        self.repo_root = repo_root
+        self.root_resolved = str(repo_root.resolve())  # == repo_root.resolve(), once
+        self._cache: dict[str, str] = {}
+
+    def resolve(self, target: str | Path) -> str:
+        """Resolved absolute path of `target` (relative targets are joined onto repo_root)."""
+        key = str(target)
+        hit = self._cache.get(key)
+        if hit is not None:
+            return hit
         cand = Path(target)
         if not cand.is_absolute():
-            cand = repo_root / cand
-        return cand.resolve() == (repo_root / comp_path).resolve()
+            cand = self.repo_root / cand
+        out = str(cand.resolve())
+        self._cache[key] = out
+        return out
+
+
+def _is_under(path: str, base: str) -> bool:
+    """`Path(path).relative_to(base)` succeeds — for two resolved absolute paths this is
+    purely lexical: equal, or `path` continues past `base` at a separator."""
+    if path == base:
+        return True
+    if base.endswith("/"):  # filesystem root
+        return path.startswith(base)
+    return path.startswith(base + "/")
+
+
+def _match_path(comp_path: str | None, target: str, repo_root: Path,
+                rs: _Resolver | None = None) -> bool:
+    if not comp_path:
+        return False
+    rs = rs or _Resolver(repo_root)
+    try:
+        return rs.resolve(target) == rs.resolve(comp_path)
     except (OSError, ValueError):
         return False
 
 
-def _rel_or_abs(target: str, repo_root: Path) -> str:
+def _rel_or_abs(target: str, repo_root: Path, rs: _Resolver | None = None) -> str:
+    rs = rs or _Resolver(repo_root)
     try:
-        p = Path(target)
-        if not p.is_absolute():
-            p = repo_root / p
-        return str(p.resolve().relative_to(repo_root.resolve()))
+        return str(Path(rs.resolve(target)).relative_to(rs.root_resolved))
     except (OSError, ValueError):
         return target
 
@@ -172,13 +207,11 @@ def _read_range(tin: dict) -> tuple[int, int | None] | None:
     return (start, start + lim - 1 if isinstance(lim, int) else None)
 
 
-def _under_dir(comp_dir: Path, target: str, repo_root: Path) -> bool:
+def _under_dir(comp_dir: Path, target: str, repo_root: Path,
+               rs: _Resolver | None = None) -> bool:
+    rs = rs or _Resolver(repo_root)
     try:
-        cand = Path(target)
-        if not cand.is_absolute():
-            cand = repo_root / cand
-        cand.resolve().relative_to(comp_dir.resolve())
-        return True
+        return _is_under(rs.resolve(target), rs.resolve(comp_dir))
     except (OSError, ValueError):
         return False
 
@@ -187,6 +220,7 @@ def attribute(parsed: ParsedSession, components: list[Component],
               repo_root: Path) -> Attribution:
     att = Attribution()
     comps = [c for c in components if not c.missing]
+    rs = _Resolver(repo_root)
 
     def _index(type_: str) -> dict[str, list[Component]]:
         """name → components. A transcript names a component, never a provenance, so one name
@@ -206,14 +240,16 @@ def attribute(parsed: ParsedSession, components: list[Component],
     hooks = [c for c in comps if c.type == "hook"]
     claude_mds = [c for c in comps if c.type == "claude_md"]
     files = [c for c in comps if c.type == "file"]
+    path_comps = [*files, *claude_mds]  # what a Read / Bash file read can match by path
+    # subdirectory CLAUDE.md → its directory, computed once (directory activity)
+    sub_claude_dirs = [(c, repo_root / Path(c.path).parent) for c in claude_mds
+                       if c.name not in ("root", "global") and c.path]
 
-    # tool_result index (I verdict requires "result is not error")
-    results: dict[str, Event] = {}
-    for ev in parsed.events:
-        if ev.kind == "tool_result" and ev.tool_use_id:
-            results[ev.tool_use_id] = ev
+    # tool_result index (I verdict requires "result is not error"); first result per id,
+    # the same reading facts.py and stale.py use
+    results = index_tool_results(parsed.events)
 
-    # registered: every non-missing manifest component is R (A7.8; limitation documented in README)
+    # registered: every non-missing manifest component is R (limitation documented in README)
     if parsed.events:
         first = parsed.events[0]
         for c in comps:
@@ -229,7 +265,7 @@ def attribute(parsed: ParsedSession, components: list[Component],
                       detail=f"cc {parsed.cc_version or '?'}")
     )
 
-    # root/global CLAUDE.md: always L, timeline anchored at session start (A7.7).
+    # root/global CLAUDE.md: always L, timeline anchored at session start.
     # Though system-injected, it is still content that entered context → listed at the top of file loads.
     for c in claude_mds:
         if c.name in ("root", "global") and parsed.events:
@@ -244,14 +280,19 @@ def attribute(parsed: ParsedSession, components: list[Component],
         signal cannot say which one ran, so every candidate is credited heuristically."""
         return base if len(cands) == 1 else "heuristic"
 
-    def _skills_by_name(raw: str | None) -> list[Component]:
+    def _by_name(index: dict[str, list[Component]], raw: str | None) -> list[Component]:
+        """Components a transcript name resolves to. A miss on the full name falls back to
+        the `plugin:name` form: the plugin half narrows same-named candidates to that
+        provenance, and when none carries it every candidate stays (ambiguity → heuristic
+        via _confidence). Skills, commands and subagents are all named this way."""
         if not raw:
             return []
-        if raw in skills:
-            return skills[raw]
-        if ":" in raw:  # plugin:skill form — the plugin half narrows the provenance
+        cands = index.get(raw)
+        if cands:
+            return cands
+        if ":" in raw:
             plugin, short = raw.split(":", 1)
-            cands = skills.get(short, [])
+            cands = index.get(short, [])
             return [c for c in cands if c.source == f"plugin:{plugin}"] or cands
         return []
 
@@ -277,14 +318,14 @@ def attribute(parsed: ParsedSession, components: list[Component],
         return cands
 
     for ev in parsed.events:
-        # line-level attributionSkill (spike #3 auxiliary L signal). Checked ahead of the kind
+        # line-level attributionSkill (auxiliary L signal). Checked ahead of the kind
         # dispatch because the assistant_msg / user_msg branches below `continue`: a skill turn
         # that produces only text and calls no tools would otherwise never register. Skipped on
         # the expansion message itself, which the user_msg branch marks with better evidence.
         if ev.attribution_skill and not (
             ev.kind == "user_msg" and (ev.text or "").startswith(SKILL_BASE_DIR_PREFIX)
         ):
-            cands = _skills_by_name(ev.attribution_skill)
+            cands = _by_name(skills, ev.attribution_skill)
             conf = _confidence(cands, "exact")
             for comp in cands:  # not double-counted per skill per line
                 if (comp.id, "loaded") not in att.usages:
@@ -325,8 +366,11 @@ def attribute(parsed: ParsedSession, components: list[Component],
                         _is_boilerplate(att.prompt_digest) and not _is_boilerplate(stripped)
                     ):
                         att.prompt_digest = clean(stripped)[:80]
-                # command marker (A7.2, spike #4 main case exact)
-                m = COMMAND_MARKER_RE.search(text)
+                # command marker (exact). Anchored to the message
+                # start (the observed marker shape): a user message merely *quoting* a
+                # marker mid-text — e.g. pasting a transcript line while dogfooding — must
+                # not count as an exact invocation.
+                m = COMMAND_MARKER_RE.match(text.lstrip())
                 cmd_name = None
                 if m:
                     cmd_name = m.group(1)
@@ -335,18 +379,12 @@ def attribute(parsed: ParsedSession, components: list[Component],
                 if cmd_name:
                     # namespaced local commands index under their full name (frontend:review);
                     # a qualified miss falls back to the short name, narrowed by the plugin half
-                    # when it matches a provenance (mirrors _skills_by_name)
-                    cands = commands.get(cmd_name)
-                    if not cands and ":" in cmd_name:
-                        plugin, short = cmd_name.split(":", 1)
-                        cands = commands.get(short) or []
-                        cands = [c for c in cands if c.source == f"plugin:{plugin}"] or cands
-                    cands = cands or []
+                    cands = _by_name(commands, cmd_name)
                     conf = _confidence(cands, "exact")
                     for comp in cands:
                         att.mark(comp, "invoked", ev, f"/{cmd_name}", conf,
                                  est_tokens=comp.tokens_est or 0)
-            # skill expansion (A7.1 L, spike #3 main case exact) — sidechains included:
+            # skill expansion (L, exact) — sidechains included:
             # a skill a subagent loads is still this session's scaffold usage
             if text.startswith(SKILL_BASE_DIR_PREFIX):
                 # partition (not splitlines()[0]) — an empty remainder must not crash the scan
@@ -359,7 +397,7 @@ def attribute(parsed: ParsedSession, components: list[Component],
             continue
 
         if ev.kind == "hook":
-            # A7.5: hook I best-effort; confidence always heuristic
+            # hook I best-effort; confidence always heuristic
             candidates = [
                 h for h in hooks
                 if h.hook_event and ev.hook_event
@@ -384,17 +422,17 @@ def attribute(parsed: ParsedSession, components: list[Component],
         result = results.get(ev.tool_use_id or "")
         result_ok = result is not None and not result.is_error
         result_est = estimate_tokens(result.text or "") if result is not None else 0
-        input_est = sum(estimate_tokens(v) for v in tin.values() if isinstance(v, str))
 
         # agent action events (first-class timeline display): file edits and command execution.
         # Recorded as soon as the action happens (unlike loading); failures are marked rather than dropped.
         bash_action: TimelineEntry | None = None
         if tool in FILE_EDIT_TOOLS or tool == "Bash":
+            input_est = sum(estimate_tokens(v) for v in tin.values() if isinstance(v, str))
             if tool == "Bash":
                 detail = (tin.get("command") or "").strip().replace("\n", " ⏎ ")
             else:
                 target = tin.get("file_path") or tin.get("notebook_path") or ""
-                detail = _rel_or_abs(target, repo_root) if target else ""
+                detail = _rel_or_abs(target, repo_root, rs) if target else ""
             failed = result is not None and result.is_error
             # Bash output may turn out to be file reads (attributed below), so it starts
             # with the command only; other tools count input + result now.
@@ -409,7 +447,7 @@ def attribute(parsed: ParsedSession, components: list[Component],
                 bash_action = entry
 
         if tool == "Skill":
-            cands = _skills_by_name(tin.get("skill"))
+            cands = _by_name(skills, tin.get("skill"))
             if result_ok:  # I = execution completed (result is not error)
                 conf = _confidence(cands, "exact")
                 for comp in cands:
@@ -417,15 +455,10 @@ def attribute(parsed: ParsedSession, components: list[Component],
                              est_tokens=result_est)
             continue
 
-        if tool in ("Task", "Agent"):  # Agent since ~2.1.2xx, Task before (SPIKES.md W2 #13)
+        if tool in ("Task", "Agent"):  # Agent since ~2.1.2xx, Task before
             sub = tin.get("subagent_type")
-            cands = agents.get(sub, []) if isinstance(sub, str) else []
-            if not cands and isinstance(sub, str) and ":" in sub:
-                # plugin agents dispatch qualified (plugin:name) but index under the short
-                # name; the plugin half narrows the provenance (mirrors _skills_by_name)
-                plugin, short = sub.split(":", 1)
-                cands = agents.get(short, [])
-                cands = [c for c in cands if c.source == f"plugin:{plugin}"] or cands
+            # plugin agents dispatch qualified (plugin:name) but index under the short name
+            cands = _by_name(agents, sub) if isinstance(sub, str) else []
             conf = _confidence(cands, "exact")
             for comp in cands:
                 att.mark(comp, "invoked", ev, f"{tool}(subagent_type={sub})", conf,
@@ -444,8 +477,8 @@ def attribute(parsed: ParsedSession, components: list[Component],
             target = tin.get("file_path")
             if isinstance(target, str) and result_ok:
                 matched_cid: str | None = None
-                for c in [*files, *claude_mds]:
-                    if _match_path(c.path, target, repo_root):
+                for c in path_comps:
+                    if _match_path(c.path, target, repo_root, rs):
                         att.mark(c, "loaded", ev, f"Read {target}", "exact",
                                  est_tokens=result_est)
                         matched_cid = c.id
@@ -455,7 +488,7 @@ def attribute(parsed: ParsedSession, components: list[Component],
                         att.mark(comp, "loaded", ev, f"Read {target}", "heuristic",
                                  est_tokens=result_est)
                         matched_cid = matched_cid or comp.id
-                att.record_file_read(ev, _rel_or_abs(target, repo_root), "Read",
+                att.record_file_read(ev, _rel_or_abs(target, repo_root, rs), "Read",
                                      "exact", matched_cid, est_tokens=result_est,
                                      line_range=_read_range(tin))
             continue
@@ -463,11 +496,9 @@ def attribute(parsed: ParsedSession, components: list[Component],
         if tool in FILE_EDIT_TOOLS:
             target = tin.get("file_path") or tin.get("notebook_path")
             if isinstance(target, str):
-                # subdirectory CLAUDE.md directory activity heuristic (spike #6 degraded)
-                for c in claude_mds:
-                    if c.name in ("root", "global") or not c.path:
-                        continue
-                    if _under_dir(repo_root / Path(c.path).parent, target, repo_root):
+                # subdirectory CLAUDE.md directory activity heuristic (degraded)
+                for c, comp_dir in sub_claude_dirs:
+                    if _under_dir(comp_dir, target, repo_root, rs):
                         att.mark(c, "loaded", ev, f"directory activity: {tool} {target}", "heuristic")
             continue
 
@@ -502,27 +533,26 @@ def attribute(parsed: ParsedSession, components: list[Component],
                     bash_action.est_tokens += result_est
                 for p in valid_paths:
                     matched_cid = None
-                    for c in [*files, *claude_mds]:
-                        if _match_path(c.path, p, repo_root):
+                    for c in path_comps:
+                        if _match_path(c.path, p, repo_root, rs):
                             att.mark(c, "loaded", ev, f"Bash file read: {p}", "heuristic",
                                      est_tokens=per_path_est)
                             matched_cid = c.id
-                    att.record_file_read(ev, _rel_or_abs(p, repo_root), "Bash",
+                    att.record_file_read(ev, _rel_or_abs(p, repo_root, rs), "Bash",
                                          "heuristic", matched_cid, est_tokens=per_path_est)
             elif bash_action is not None:
                 bash_action.est_tokens += result_est  # error output still lands in context
             # subdirectory CLAUDE.md directory activity (Bash cwd)
-            for c in claude_mds:
-                if c.name in ("root", "global") or not c.path:
-                    continue
-                if ev.cwd and _under_dir(repo_root / Path(c.path).parent, ev.cwd, repo_root):
-                    att.mark(c, "loaded", ev, f"directory activity: Bash cwd={ev.cwd}", "heuristic")
+            if ev.cwd:
+                for c, comp_dir in sub_claude_dirs:
+                    if _under_dir(comp_dir, ev.cwd, repo_root, rs):
+                        att.mark(c, "loaded", ev, f"directory activity: Bash cwd={ev.cwd}", "heuristic")
             continue
 
     att.timeline.append(
         TimelineEntry(idx=10**9, ts=att.ended_at, kind="session_end",
                       detail=f"Σ {att.total_tokens:,} tok")
     )
-    # ts missing/out-of-order → sort by idx (spike #1 degraded, marked "order inferred" on display)
+    # ts missing/out-of-order → sort by idx (degraded, marked "order inferred" on display)
     att.timeline.sort(key=lambda t: t.idx)
     return att

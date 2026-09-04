@@ -1,22 +1,24 @@
-"""typer entry point: argument parsing and assembly only (A1).
+"""typer entry point: argument parsing and assembly only.
 
-Exit codes (A3.1 v3 final): 0=success; 1=reserved/unused; 2=CLI argument error
+Exit codes: 0=success; 1=reserved/unused; 2=CLI argument error
 (typer default); 3=precondition/environment error (PreconditionError).
 Reports go to stdout; warnings and diagnostics go to stderr. Core flow makes
-zero API calls (AC6).
+zero API calls.
 """
 
 from __future__ import annotations
 
+import shutil
 from collections import Counter
-from datetime import datetime, timezone
 from pathlib import Path
 
 import typer
 
 from . import __version__, hookinstall
 from .attributor import attribute
-from .config import Config, find_repo_root, load_config
+from .attributor.facts import FACTS_EXTRACTOR_VERSION, extract_facts
+from .attributor.stale import STALE_EXTRACTOR_VERSION, extract_stale
+from .config import Config, audit_dir, find_repo_root, load_config
 from .errors import PreconditionError
 from .inventory.scanner import (
     load_manifest,
@@ -26,12 +28,20 @@ from .inventory.scanner import (
     write_manifest,
 )
 from .parser import discover_sessions, parse_file
-from .pipeline import build_rows, open_store, parse_since, scan_repo
+from .pipeline import (
+    build_rows,
+    open_store,
+    parse_since,
+    scan_repo,
+)
 from .report.aggregate import aggregate_session, aggregate_window
 from .report.ansi import Style
-from .report.charts import hbar_chart
+from .report.charts import hbar_chart, pad_to, truncate_display
 from .report.render_md import render_md, write_md
 from .report.render_term import render_term
+from .report.selfderive import aggregate_analyze, emit_prompt_text, select_row
+from .report.timeline import fmt_local_minute
+from .store import Store
 
 app = typer.Typer(add_completion=False, no_args_is_help=True,
                   context_settings={"help_option_names": ["-h", "--help"]})
@@ -39,7 +49,7 @@ app = typer.Typer(add_completion=False, no_args_is_help=True,
 EXIT_PRECONDITION = 3
 
 
-def _version_callback(value: bool):
+def _version_callback(value: bool) -> None:
     if value:
         typer.echo(f"context-render {__version__}")
         raise typer.Exit()
@@ -60,7 +70,17 @@ def _guard(fn):
         return fn()
     except PreconditionError as e:
         typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(EXIT_PRECONDITION)
+        raise typer.Exit(EXIT_PRECONDITION) from None
+
+
+def _load_config_flags(repo_root: Path, no_timeline: bool, no_graph: bool) -> Config:
+    """load_config plus the two report toggles; a flag only ever switches a section off."""
+    config = load_config(repo_root)
+    if no_timeline:
+        config.timeline = False
+    if no_graph:
+        config.graph = False
+    return config
 
 
 def _emit(agg: dict, config: Config, repo_root: Path, md: bool, full: bool = False) -> None:
@@ -86,14 +106,13 @@ def init(
         mpath = manifest_path(repo_root)
         if mpath.exists() and not refresh:
             raise PreconditionError(
-                f"manifest already exists ({mpath}); to update run context-render init --refresh"
+                f"manifest already exists ({mpath}); to update run ctxr init --refresh"
             )
         new_comps = scan_components(repo_root)
         if refresh and mpath.exists():
             comps = merge_refresh(load_manifest(repo_root), new_comps)
         else:
             comps = new_comps
-        path = write_manifest(repo_root, comps)
 
         # Inventory summary: split by type/provenance, static/dynamic + token-share bar chart
         active = [c for c in comps if not c.missing]
@@ -105,7 +124,6 @@ def init(
             else (c.tokens_est or 0) if c.context == "dynamic" else 0
             for c in active
         )
-        typer.echo(f"manifest written to {path}")
         typer.echo(f"{len(active)} components: " +
                    ", ".join(f"{t}×{n}" for t, n in sorted(by_type.items())))
         typer.echo("provenance: " + ", ".join(f"{p}×{n}" for p, n in sorted(by_prov.items())))
@@ -121,11 +139,16 @@ def init(
             for line in hbar_chart(items, bar_paint=style.cyan):
                 typer.echo(line, color=True)
 
+        # ask BEFORE writing anything: declining must leave the repo exactly as it was
+        # (a leftover manifest would turn the user's next `init` into exit 3)
         if static_total < 1000 and not yes:
             typer.echo("")
             typer.echo("static context total < 1,000 tokens — you may not need this tool yet.")
             if not typer.confirm("Continue anyway?", default=True):
                 raise typer.Exit(0)
+
+        path = write_manifest(repo_root, comps)
+        typer.echo(f"manifest written to {path}")
 
         # .gitignore append (skip if already present)
         gi = repo_root / ".gitignore"
@@ -139,7 +162,7 @@ def init(
                 fh.write("\n".join(to_add) + "\n")
             typer.echo(f".gitignore appended: {', '.join(to_add)}")
 
-        # SessionEnd hook (A10): interactive prompt; --hook/--no-hook skips the prompt.
+        # SessionEnd hook: interactive prompt; --hook/--no-hook skips the prompt.
         # --yes takes the prompt's default answer (No) — only an explicit --hook installs unattended.
         do_hook = hook
         if do_hook is None:
@@ -149,7 +172,7 @@ def init(
         if do_hook:
             if hookinstall.install(repo_root):
                 typer.echo("SessionEnd hook installed (.claude/settings.json); "
-                           "remove with context-render remove-hook")
+                           "remove with ctxr remove-hook")
             else:
                 typer.echo("SessionEnd hook already exists (skipped)")
 
@@ -172,87 +195,70 @@ def sync(
     _guard(run)
 
 
-def _session_report(session: str | None, md: bool, evidence: bool,
+def _session_report(session: str, md: bool, evidence: bool,
                     no_timeline: bool, no_graph: bool, full: bool = False) -> None:
     repo_root = find_repo_root()
-    config = load_config(repo_root)
-    if no_timeline:
-        config.timeline = False
-    if no_graph:
-        config.graph = False
+    config = _load_config_flags(repo_root, no_timeline, no_graph)
     components = load_manifest(repo_root)
     sessions = discover_sessions(repo_root)
     if not sessions:
         raise PreconditionError("No transcript found for this repo; check the Claude Code project path")
-    if session:
-        # Explicit target → do not apply in-progress exclusion (this is the one the user wants)
-        matches = [s for s in sessions if s.session_id.startswith(session)]
-        if not matches:
-            raise PreconditionError(
-                f"No session found with id prefix {session!r}; "
-                "use context-render sessions to list them"
-            )
-        if len(matches) > 1:
-            ids = ", ".join(s.session_id[:12] for s in matches)
-            raise PreconditionError(f"prefix {session!r} matches multiple: {ids}; lengthen the prefix")
-        target = matches[0]
-    else:
-        # Decision #1: newest mtime; mtime within < N minutes treated as in-progress and excluded
-        now = datetime.now(timezone.utc).timestamp()
-        eligible = [s for s in sessions
-                    if now - s.mtime >= config.in_progress_minutes * 60]
-        if not eligible:
-            raise PreconditionError(
-                f"All sessions are in progress (mtime < {config.in_progress_minutes} min); try again later"
-            )
-        target = max(eligible, key=lambda s: s.mtime)
+    matches = [s for s in sessions if s.session_id.startswith(session)]
+    if not matches:
+        raise PreconditionError(
+            f"No session found with id prefix {session!r}; "
+            "use ctxr sessions to list them"
+        )
+    if len(matches) > 1:
+        ids = ", ".join(s.session_id[:12] for s in matches)
+        raise PreconditionError(f"prefix {session!r} matches multiple: {ids}; lengthen the prefix")
+    target = matches[0]
     parsed = parse_file(target.path, target.sidechain_paths)
     att = attribute(parsed, components, repo_root)
+    facts = extract_facts(parsed, repo_root)
+    stale = extract_stale(parsed, repo_root)
     # Ingest on the spot if not yet stored (idempotent)
     store = open_store(repo_root)
     try:
-        if store.needs_update(target.session_id, target.mtime, target.size):
-            srow, urows = build_rows(parsed, att, components, target, repo_root, config)
-            store.replace_session(srow, urows)
+        if store.needs_update(target.session_id, target.mtime, target.size,
+                              FACTS_EXTRACTOR_VERSION, STALE_EXTRACTOR_VERSION):
+            srow, urows, frows, strows = build_rows(
+                parsed, att, components, target, repo_root, config, facts=facts, stale=stale)
+            store.replace_session(srow, urows, frows, strows)
     finally:
         store.close()
-    agg = aggregate_session(parsed, att, components, config, include_evidence=evidence)
+    agg = aggregate_session(parsed, att, components, config, include_evidence=evidence,
+                            facts=facts.facts, facts_tool_output=facts.tool_output_tokens_est,
+                            stale=stale)
     _emit(agg, config, repo_root, md, full=full)
 
 
-@app.command()
-def last(
-    md: bool = typer.Option(False, "--md", help="Output markdown and write to file"),
-    evidence: bool = typer.Option(False, "--evidence", help="Attach raw event evidence for each attribution"),
-    full: bool = typer.Option(False, "--full", help="Complete terminal report, no truncation (--md is always complete)"),
-    no_timeline: bool = typer.Option(False, "--no-timeline"),
-    no_graph: bool = typer.Option(False, "--no-graph"),
-):
-    """Most recent session's three-state attribution report, with full timeline (any session: context-render sessions <id-prefix>)."""
-    _guard(lambda: _session_report(None, md, evidence, no_timeline, no_graph, full))
-
-
 def _window_report(since: str, md: bool, no_timeline: bool, no_graph: bool,
-                   deadweight_only: bool):
+                   emit_prompt: str | None = None) -> None:
     repo_root = find_repo_root()
-    config = load_config(repo_root)
-    if no_timeline:
-        config.timeline = False
-    if no_graph:
-        config.graph = False
+    config = _load_config_flags(repo_root, no_timeline, no_graph)
     components = load_manifest(repo_root)
     since_dt = parse_since(since)
+    since_iso = since_dt.isoformat() if since_dt else None
+    since_label = f"last {since}" if since else "all history"
     store = open_store(repo_root)
     try:
-        agg = aggregate_window(
-            store, components, config,
-            since_iso=since_dt.isoformat() if since_dt else None,
-            since_label=f"last {since}" if since else "all history",
-            deadweight_only=deadweight_only,
-        )
+        if emit_prompt:
+            sd_agg, fact_rows = aggregate_analyze(store, config, since_iso=since_iso,
+                                                  since_label=since_label)
+            row = select_row(sd_agg["rows"], emit_prompt)
+            if row is None:
+                raise PreconditionError(
+                    f"--emit-prompt {emit_prompt!r} matches no row; give a row number from "
+                    "the current SELF-DERIVATION table or a canonical key (run ctxr report first)"
+                )
+            typer.echo(emit_prompt_text(sd_agg, fact_rows, row))
+            return
+        agg = aggregate_window(store, components, config,
+                               since_iso=since_iso, since_label=since_label)
     finally:
         store.close()
-    # session_count == 0 → aggregate_window suppresses the deadweight verdict and puts
+    # session_count == 0 → aggregate_window degrades every status to "no data" and puts
     # the warning in the report body itself, so both term and --md carry it
     _emit(agg, config, repo_root, md)
 
@@ -272,26 +278,38 @@ Command overview
   sync        parse transcripts → three-state attribution → idempotent ingest (re-runs don't double-count)
               --since <spec> sync window only; --force full re-parse
 
-  sessions    list ingested sessions (id, time, turns, task digest)
+  sessions    list ingested sessions (id, time, turns, task digest), newest on top
               --since <spec> filter window
-              sessions <id-prefix> shows that session's full report (same as last;
-              in-progress exclusion not applied); --md/--evidence/--full/--no-timeline/--no-graph apply
-
-  last        full report for the most recent session: three-state attribution, file loads
+  sessions <id-prefix>
+              full report for that session: three-state attribution, file loads
               (context injection order), context window map (▼ injections above / ▲ actions
               below; event-sized color blocks per lane + window-occupancy bar;
               labels = timeline row numbers),
-              numbered timeline (with [read]/[edit]/[write]/[bash] action events)
-              for any other session: context-render sessions <id-prefix>
+              numbered timeline (with [read]/[edit]/[write]/[bash] action events),
+              and a SELF-DERIVATION block (top info-needs the agent answered itself)
               --evidence attach raw event evidence; --md write to file; --full untruncated
               terminal output (keeps color); --no-timeline/--no-graph
 
   report      cross-session aggregate: invocation count / last used / status per component
-              (active / low-use / deadweight / MISS), daily-activity histogram, cost estimate
-              --since 30d (default); --md write to file
+              (active / low-use / unused / MISS), daily-activity histogram, cost estimate,
+              and a SELF-DERIVATION block — every agent search is a question the harness
+              didn't answer: what the agent went after, with token and window-occupancy
+              cost per information need (no scores, no verdicts)
+              --since 30d (default); --md write to file (complete SELF-DERIVATION table)
+              --emit-prompt <#|key> print one SELF-DERIVATION row's full evidence as a
+              drafting prompt (plain text; deciding what scaffold to write is left to the reader)
 
-  deadweight  focus on deadweight and never-triggered components, with token-share bar chart
-              --since 90d (default)
+  map         routing map: measure guidance as a map and what it fails to cover — per-carrier
+              prose share + label quality, loading guarantees (auto-inject / @import /
+              dir-entry / plain reference), structure + hop depth, dead routes, and Python
+              reachability with unreachable files sorted by observed self-derivation cost
+              (facts with literature notes, no scores)
+              --md write to file; --since 30d join window; no transcripts needed
+
+  map init    generate a routing-map skeleton (paths + TODO labels) plus fill
+              instructions for your agent; never overwrites (existing CLAUDE.md sends
+              the skeleton to .context-render/map-proposal.md)
+              --shape auto|flat|tree; --output <path>
 
   clear       clear record data (db.sqlite and reports/); manifest/config kept.
               sync only rebuilds sessions whose transcripts still exist — those Claude Code
@@ -305,20 +323,105 @@ Common conventions
   --since     accepts 30d / 12w / 2026-06-01 (by session start time, local timezone)
   --md        write full markdown report to .context-render/reports/ and also print it
   exit codes  0 success; 2 argument error; 3 precondition error (not init'd, transcripts not found)
-  per-command details: context-render <command> --help
+  per-command details: ctxr <command> --help
 
 Usage loops
 
-  inner loop (after each task): sync → last → "why wasn't skill X loaded?" → fix trigger
-  outer loop (weekly): report --since 30d → deadweight list → delete/rewrite low-use components
+  inner loop (after each task): sync → sessions → sessions <id-prefix> → "why wasn't skill X
+              loaded?" → fix trigger → check the next session's report: did the fix land?
+  outer loop (weekly): report --since 30d → review unused components → delete/rewrite low-use
+              ones; the SELF-DERIVATION block shows what the agent kept going to find itself
 
 Three states: R registered → L loaded (content injected) → I invoked (actually called)
 Marks: ~ = heuristic attribution (drill down with --evidence to verify); amounts/tokens are estimates
 """
 
 
+map_app = typer.Typer(add_completion=False, invoke_without_command=True,
+                      help="Routing map: measure guidance as a map (default), "
+                           "or generate a skeleton (init)")
+app.add_typer(map_app, name="map")
+
+
+@map_app.callback()
+def map_report(
+    ctx: typer.Context,
+    md: bool = typer.Option(False, "--md", help="Output markdown and write to file"),
+    since: str = typer.Option("30d", "--since",
+                              help="Observed-cost join window (30d / 12w / 2026-06-01)"),
+):
+    """Measure the repo's guidance as a routing map and what it fails to cover: per-carrier
+    prose share and label quality, loading guarantees (auto-inject / @import / dir-entry /
+    plain reference), structure and hop depth, dead routes, and Python reachability with
+    observed self-derivation cost. Purely static — no transcripts needed; joins self-derivation
+    facts when a db exists. Measurements with a literature note, never scores."""
+    if ctx.invoked_subcommand is not None:
+        return
+
+    def run():
+        from .guidance.refs import FileIndex
+        from .mapdev.audit import aggregate_map
+
+        repo_root = find_repo_root()
+        config = load_config(repo_root)
+        since_dt = parse_since(since)
+        store = None
+        if (audit_dir(repo_root) / "db.sqlite").is_file():  # never create a db here
+            store = open_store(repo_root)
+        try:
+            agg = aggregate_map(
+                FileIndex(repo_root), store=store,
+                since_iso=since_dt.isoformat() if since_dt else None,
+                window_label=f"last {since}")
+        finally:
+            if store is not None:
+                store.close()
+        _emit(agg, config, repo_root, md)
+
+    _guard(run)
+
+
+@map_app.command("init")
+def map_init(
+    shape: str = typer.Option("auto", "--shape",
+                              help="auto (flat ≤300 files, tree beyond) | flat | tree"),
+    output: Path | None = typer.Option(None, "--output",
+                                       help="Write the skeleton here instead"),
+):
+    """Generate a routing-map skeleton (paths + TODO labels) plus fill instructions for
+    your agent. Never overwrites: an existing CLAUDE.md sends the skeleton to
+    .context-render/map-proposal.md; an existing proposal is refused."""
+
+    def run():
+        from .guidance.refs import FileIndex
+        from .mapdev.initgen import build_skeleton, fill_instructions
+
+        if shape not in ("auto", "flat", "tree"):
+            raise PreconditionError(f"unknown --shape '{shape}' (auto|flat|tree)")
+        repo_root = find_repo_root()
+        target = output
+        if target is None:
+            root_map = repo_root / "CLAUDE.md"
+            target = (audit_dir(repo_root) / "map-proposal.md"
+                      if root_map.exists() else root_map)
+        if target.exists():
+            raise PreconditionError(
+                f"{target} already exists — move it aside or pass --output")
+        index = FileIndex(repo_root)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(build_skeleton(index, shape), encoding="utf-8")
+        instr = audit_dir(repo_root) / "map-fill-instructions.md"
+        instr.parent.mkdir(parents=True, exist_ok=True)
+        instr.write_text(fill_instructions(), encoding="utf-8")
+        typer.echo(f"Wrote {target} (skeleton, TODO labels)")
+        typer.echo(f"Wrote {instr} — hand it to your agent to fill the labels, "
+                   "then run `ctxr map`")
+
+    _guard(run)
+
+
 @app.command()
-def help():  # noqa: A001 - CLI subcommand name, deliberately shadows the builtin
+def help():  # CLI subcommand name, deliberately shadows the builtin
     """Explain which commands context-render provides."""
     typer.echo(HELP_TEXT)
 
@@ -339,11 +442,9 @@ def remove_hook():
 
 def _unreproducible(db: Path):
     """Sessions in the DB that sync could not rebuild; None if the DB itself can't be opened."""
-    from .store import Store
-
     try:
         store = Store(db)
-    except Exception:
+    except Exception:  # noqa: BLE001 - an unopenable db must degrade to None, not crash clear
         return None
     try:
         return store.unreproducible_sessions()
@@ -363,8 +464,6 @@ def clear(
     """
 
     def run():
-        from .config import audit_dir
-
         repo_root = find_repo_root()
         adir = audit_dir(repo_root)
         db = adir / "db.sqlite"
@@ -404,8 +503,6 @@ def clear(
             typer.echo("Every recorded session still has its transcript on disk; sync can rebuild them all.")
         if not yes and not typer.confirm("Confirm clear?", default=False):
             raise typer.Exit(0)
-        import shutil
-
         for p in targets:
             if p.is_dir():
                 shutil.rmtree(p)
@@ -433,11 +530,8 @@ def sessions(
 
     def run():
         if id_prefix:
-            # Explicit target → same report as `last`, in-progress exclusion not applied
             _session_report(id_prefix, md, evidence, no_timeline, no_graph, full)
             return
-
-        from .report.charts import pad_to, truncate_display
 
         repo_root = find_repo_root()
         load_manifest(repo_root)  # not init'd → exit 3
@@ -448,7 +542,7 @@ def sessions(
         finally:
             store.close()
         if not rows:
-            typer.echo("(no ingested sessions; run context-render sync first)", err=True)
+            typer.echo("(no ingested sessions; run ctxr sync first)", err=True)
             return
         style = Style.detect()
         typer.echo(
@@ -459,14 +553,9 @@ def sessions(
             color=True,
         )
         for r in reversed(rows):  # newest on top
-            started = (r["started_at"] or "")
+            started = r["started_at"] or ""
             if started:
-                try:
-                    started = (
-                        datetime.fromisoformat(started).astimezone().strftime("%Y-%m-%d %H:%M")
-                    )
-                except ValueError:
-                    started = started[:16].replace("T", " ")
+                started = fmt_local_minute(started)
             flag = "⚠" if r["parse_status"] == "degraded" else "ok"
             flag_cell = (style.yellow if flag == "⚠" else style.dim)(pad_to(flag, 10))
             digest = truncate_display(r["prompt_digest"] or "—", 46)
@@ -485,19 +574,14 @@ def report(
     md: bool = typer.Option(False, "--md"),
     no_timeline: bool = typer.Option(False, "--no-timeline"),
     no_graph: bool = typer.Option(False, "--no-graph"),
+    emit_prompt: str = typer.Option(
+        None, "--emit-prompt", metavar="<#|KEY>",
+        help="Print one SELF-DERIVATION row's full evidence as a drafting prompt (plain text "
+             "to stdout; row numbers are unstable across runs, the canonical key isn't)"),
 ):
-    """Cross-session aggregate report (deadweight total, daily-activity histogram)."""
-    _guard(lambda: _window_report(since, md, no_timeline, no_graph, False))
-
-
-@app.command()
-def deadweight(
-    since: str = typer.Option("90d", "--since", help="Observation window"),
-    no_graph: bool = typer.Option(False, "--no-graph"),
-    md: bool = typer.Option(False, "--md"),
-):
-    """Focus on deadweight and never-triggered components (with token-share bar chart)."""
-    _guard(lambda: _window_report(since, md, True, no_graph, True))
+    """Cross-session aggregate report: per-component status, daily-activity histogram, and
+    the SELF-DERIVATION block (what the agent went to find itself, sorted by token cost)."""
+    _guard(lambda: _window_report(since, md, no_timeline, no_graph, emit_prompt))
 
 
 def main():

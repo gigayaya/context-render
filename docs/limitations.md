@@ -13,6 +13,7 @@ Read these before making any delete decisions.
 9. **Cost estimation is approximate**: static context overhead is amortized per turn at the ratio `r_t = S/C_t`; `subscription` accounts show no dollar amounts (marginal cost is zero, so showing it would mislead), only tokens and share.
 10. **Compaction observation**: identified from known event shapes (`compact_boundary` / `isCompactSummary`); if your Claude Code version records it in a different shape, the timeline won't show a compaction row.
 11. **Version support matrix**: 2.1.x (sampled 2.1.156–2.1.207). Other versions get a warning + best-effort parsing, with all attribution marked heuristic; unknown event types don't crash — they're counted, skipped, and marked `degraded`.
+12. **`ctxr map` audits the repo only**: the user-global `~/.claude/CLAUDE.md` is always loaded by Claude Code but is not a start node for reachability or dead-route detection — its references cannot be resolved against the repo tree. Reachability numbers therefore exclude anything only the global file routes to.
 
 ## Privacy
 

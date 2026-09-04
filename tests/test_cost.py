@@ -1,9 +1,9 @@
-"""cost engine tests (AC7): usage summation, apportioning formula, no-usage degrade, unknown model."""
+"""cost engine tests: usage summation, apportioning formula, no-usage degrade, unknown model."""
 
 import pytest
 
 from context_render.config import Config
-from context_render.cost import compute_session_cost, deadweight_cost
+from context_render.cost import compute_session_cost
 from context_render.parser.loader import Event, Usage
 
 
@@ -76,9 +76,3 @@ def test_price_override():
     ev = _ev(model="claude-hyperion-9", input_tokens=1_000_000)
     d = compute_session_cost([ev], static_tokens_s=0, config=cfg)
     assert d.cost_usd == pytest.approx(1.0)
-
-
-def test_deadweight_cost():
-    assert deadweight_cost(10.0, 500, 1000) == pytest.approx(5.0)
-    assert deadweight_cost(None, 500, 1000) is None
-    assert deadweight_cost(10.0, 500, 0) is None

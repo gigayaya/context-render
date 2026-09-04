@@ -1,4 +1,4 @@
-"""SessionEnd hook install/remove (A10; spike #9 main case = SessionEnd).
+"""SessionEnd hook install/remove.
 
 - Writes to the project's .claude/settings.json; MUST be idempotent (repeated init does not re-insert).
 - Abnormally terminated sessions are backfilled incrementally by sync.
@@ -11,8 +11,15 @@ from pathlib import Path
 
 from .errors import PreconditionError
 
-HOOK_COMMAND = "context-render sync --since 1d"
+HOOK_COMMAND = "ctxr sync --since 1d"
+# hooks written before the executable was renamed (≤0.1.0); still matched so
+# remove-hook cleans them up and install upgrades them instead of duplicating
+LEGACY_HOOK_COMMANDS = ("context-render sync --since 1d",)
 HOOK_EVENT = "SessionEnd"
+
+
+def _matches(command: object, needles: tuple[str, ...]) -> bool:
+    return any(n in str(command) for n in needles)
 
 
 def _settings_path(repo_root: Path) -> Path:
@@ -35,15 +42,13 @@ def is_installed(repo_root: Path) -> bool:
         if not isinstance(group, dict):
             continue
         for h in group.get("hooks", []) or []:
-            if isinstance(h, dict) and HOOK_COMMAND in str(h.get("command", "")):
+            if isinstance(h, dict) and _matches(h.get("command", ""), (HOOK_COMMAND, *LEGACY_HOOK_COMMANDS)):
                 return True
     return False
 
 
 def install(repo_root: Path) -> bool:
-    """Returns True = newly installed this call; False = already present (idempotent no-op)."""
-    if is_installed(repo_root):
-        return False
+    """Returns True = installed (or upgraded a legacy command) this call; False = already current."""
     path = _settings_path(repo_root)
     data: dict = {}
     if path.is_file():
@@ -53,7 +58,7 @@ def install(repo_root: Path) -> bool:
         except json.JSONDecodeError as e:
             raise PreconditionError(
                 f"{path} is not valid JSON ({e}); fix it manually before installing the hook"
-            )
+            ) from e
         if not isinstance(data, dict):
             raise PreconditionError(
                 f"{path} top level is not a JSON object; fix it manually before installing the hook"
@@ -68,7 +73,20 @@ def install(repo_root: Path) -> bool:
         raise PreconditionError(
             f'{path} "hooks.{HOOK_EVENT}" is not a JSON array; fix it manually before installing the hook'
         )
-    groups.append({"hooks": [{"type": "command", "command": HOOK_COMMAND}]})
+    upgraded = False
+    for group in groups:
+        if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+            continue
+        for h in group["hooks"]:
+            if not isinstance(h, dict):
+                continue
+            if _matches(h.get("command", ""), (HOOK_COMMAND,)):
+                return False  # already current (idempotent no-op)
+            if _matches(h.get("command", ""), LEGACY_HOOK_COMMANDS):
+                h["command"] = HOOK_COMMAND
+                upgraded = True
+    if not upgraded:
+        groups.append({"hooks": [{"type": "command", "command": HOOK_COMMAND}]})
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return True
@@ -96,7 +114,8 @@ def uninstall(repo_root: Path) -> bool:
             new_groups.append(group)
             continue
         kept = [h for h in group["hooks"]
-                if not (isinstance(h, dict) and HOOK_COMMAND in str(h.get("command", "")))]
+                if not (isinstance(h, dict)
+                        and _matches(h.get("command", ""), (HOOK_COMMAND, *LEGACY_HOOK_COMMANDS)))]
         if len(kept) != len(group["hooks"]):
             removed = True
         if kept:

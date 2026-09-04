@@ -1,4 +1,4 @@
-"""token estimation (A6.2): ceil(utf8_len/4).
+"""token estimation: ceil(utf8_len/4).
 
 All outputs are marked "estimated" — files that are mostly CJK have larger error
 (calibration results documented in README).

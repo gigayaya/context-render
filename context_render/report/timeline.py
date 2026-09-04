@@ -1,6 +1,8 @@
-"""Timeline assembly (§5.2): full in-session event timeline, the first-class view of agentic coding."""
+"""Timeline assembly: full in-session event timeline, the first-class view of agentic coding."""
 
 from __future__ import annotations
+
+from datetime import datetime
 
 from ..attributor.rules import TimelineEntry
 from .ansi import Style
@@ -12,7 +14,7 @@ _ACTION_COLOR = {"read": "blue", "edit": "yellow", "write": "yellow", "bash": "m
 
 
 def timeline_dicts(entries: list[TimelineEntry], ts_reliable: bool) -> list[dict]:
-    """Timeline array of the intermediate aggregate object (A4.1)."""
+    """Timeline array of the intermediate aggregate object."""
     out = []
     for e in entries:
         d = {
@@ -40,11 +42,18 @@ def _fmt_ts(ts_iso: str | None) -> str:
         return "--:--:--"
     # ISO → local-readable HH:MM:SS
     try:
-        from datetime import datetime
-
         return datetime.fromisoformat(ts_iso).astimezone().strftime("%H:%M:%S")
     except ValueError:
         return "--:--:--"
+
+
+def fmt_local_minute(ts_iso: str) -> str:
+    """ISO timestamp → local `YYYY-MM-DD HH:MM` (session header, sessions list); an
+    unparsable value degrades to a textual cut of the ISO form."""
+    try:
+        return datetime.fromisoformat(ts_iso).astimezone().strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return ts_iso[:16].replace("T", " ")
 
 
 def _paint_detail(detail: str, style: Style) -> str:
@@ -63,7 +72,7 @@ def _fmt_ctx(ctx: int | None, style: Style) -> str:
 
 def render_timeline_lines(timeline: list[dict], max_lines: int | None = None,
                           style: Style | None = None) -> list[str]:
-    """Timeline character layout (shared by both forms, guaranteeing consistency AC9).
+    """Timeline character layout (shared by both forms, guaranteeing consistency).
 
       1 14:02:31      · ─ session start (cc 2.1.0)
       2 14:03:05    21k ─ [I] skill: pdf          expanded
@@ -91,6 +100,9 @@ def render_timeline_lines(timeline: list[dict], max_lines: int | None = None,
             lines.append(f"{pre}{style.bold('session end')}{'':26}{e.get('detail', '')}")
         elif kind == "compaction":
             lines.append(f"{pre}{style.magenta('⟐  compaction')}")
+        elif kind == "stale_open":
+            mark = style.dim(" ~") if e.get("confidence") == "heuristic" else ""
+            lines.append(f"{pre}{style.yellow(pad_to('[S]', 8))}{e.get('detail', '')}{mark}")
         elif kind == "file_read":
             mark = style.dim(" ~") if e.get("confidence") == "heuristic" else ""
             lines.append(f"{pre}{style.blue(pad_to('[read]', 8))}{e.get('detail', '')}{mark}")

@@ -1,7 +1,7 @@
-"""Intermediate aggregate object (A4.1, internal; JSON not exposed to users).
+"""Intermediate aggregate object (internal; JSON not exposed to users).
 
 The terminal/markdown renderers are pure-function renderers of this object,
-guaranteeing the two forms stay consistent (AC3/AC9). MUST include
+guaranteeing the two forms stay consistent. MUST include
 schema_version (M1 = 1). In M2, if machine-readable output is needed, expose
 this object directly as JSON.
 """
@@ -10,22 +10,25 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from ..attributor.facts import Fact, fact_rows
 from ..attributor.rules import Attribution
+from ..attributor.stale import StaleWindow
 from ..config import Config
-from ..cost import compute_session_cost, deadweight_cost
+from ..cost import compute_session_cost
 from ..inventory.scanner import Component
 from ..parser.loader import ParsedSession
 from ..parser.versions import is_supported
 from ..pipeline import COST_CID, GIT_COMMIT_CID
 from ..store import Store
+from .selfderive import aggregate_analyze, aggregate_rows
 from .timeline import timeline_dicts
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
-# Built-in hint text (A4.3, MUST)
+# Built-in hint text
 HINT_LOW_USE = (
     "Hint: low-use components may stem from the task mix in this window; "
     "before deleting, consider widening the observation window (--since 90d)."
@@ -35,12 +38,12 @@ HINT_CLAUDE_MD = (
     "task-specific knowledge in it is better moved into a skill — once moved out it becomes "
     "measurable, on-demand dynamic context."
 )
-HINT_EXPAND_WINDOW = (
-    "Insufficient observation sample (window <90d or sessions <20): deadweight verdicts have "
-    "limited confidence; consider widening the observation window before deciding."
-)
-
 STATE_ORDER = {"invoked": 3, "loaded": 2, "registered": 1}
+
+
+def _empty_comp_info() -> dict:
+    """Per-component window tally before any usage row lands on it."""
+    return {"invoked": 0, "loaded": 0, "last_used": None, "confidence": "exact"}
 
 
 def _attach_ctx_tokens(timeline: list[dict], samples: list[dict]) -> None:
@@ -69,8 +72,40 @@ def _attach_ctx_tokens(timeline: list[dict], samples: list[dict]) -> None:
             obj["ctx_tokens"] = None if obj.get("sidechain") else carry
 
 
-def _display_tokens(c: Component) -> int:
-    return c.dead_weight_tokens
+def _inject_stale_rows(timeline: list[dict], stale: list[dict],
+                       ts_by_idx: dict[int, str | None], order: str) -> None:
+    """[S] rows at each stale-open point (merged by event idx, right after the
+    mutating event's own rows); closing re-reads annotated in place."""
+    for d in stale:
+        row = {
+            "ts": ts_by_idx.get(d["mutate_idx"]),
+            "component": None,
+            "kind": "stale_open",
+            "transition": None,
+            "detail": (f"S{d['no']} {d['path']} · copy read #{d['read_idx']} "
+                       f"overturned ({d['mutate_tool']})"),
+            "confidence": d["confidence"],
+            "evidence_ref": d["mutate_idx"],
+            "est_tokens": None,
+            "order": order,
+        }
+        if d["sidechain"]:
+            row["sidechain"] = True
+        pos = len(timeline)
+        for i, e in enumerate(timeline):
+            ref = e.get("evidence_ref")
+            if ref is not None and ref > d["mutate_idx"]:
+                pos = i
+                break
+        timeline.insert(pos, row)
+    for d in stale:
+        if d["outcome"] != "re-read" or d["close_idx"] is None:
+            continue
+        for e in timeline:
+            if (e.get("evidence_ref") == d["close_idx"]
+                    and e.get("kind") in ("file_read", "action")):
+                e["detail"] = f"{e.get('detail') or ''} (closes S{d['no']})"
+                break
 
 
 def _static_breakdown(components: list[Component]) -> tuple[int, list[dict]]:
@@ -89,13 +124,20 @@ def _static_breakdown(components: list[Component]) -> tuple[int, list[dict]]:
 
 def aggregate_session(parsed: ParsedSession, att: Attribution,
                       components: list[Component], config: Config,
-                      include_evidence: bool = False) -> dict:
-    """Single-session aggregate (last, A4.2)."""
+                      include_evidence: bool = False,
+                      facts: list[Fact] | None = None,
+                      facts_tool_output: int | None = None,
+                      stale: list[StaleWindow] | None = None) -> dict:
+    """Single-session aggregate (sessions <id-prefix>).
+
+    facts: this session's self-derivation facts (attributor.facts.extract_facts).
+    None means they were never extracted (a session whose transcript expired before
+    the facts feature landed) — the renderer says so instead of showing an empty block."""
     comps = [c for c in components if not c.missing]
     static_total, breakdown = _static_breakdown(comps)
     cost = compute_session_cost(parsed.events, static_total, config)
-    # same contract as the DB write path (pipeline.build_rows, A11): version not in the
-    # supported list → every attribution shown as heuristic, or `last` and `report`
+    # same contract as the DB write path (pipeline.build_rows): version not in the
+    # supported list → every attribution shown as heuristic, or `sessions <id-prefix>` and `report`
     # would disagree about the very same session
     version_ok = is_supported(parsed.cc_version)
 
@@ -199,8 +241,44 @@ def aggregate_session(parsed: ParsedSession, att: Attribution,
                  "tokens": occupied}
             )
 
+    stale_sorted = sorted(stale or [], key=lambda w: (w.mutate_idx, w.read_idx, w.path))
+    stale_dicts = [
+        {
+            "no": i, "path": w.path, "sidechain": w.window_side,
+            "agent": w.window_agent, "read_idx": w.read_idx,
+            "mutate_idx": w.mutate_idx, "mutate_tool": w.mutate_tool,
+            "close_idx": w.close_idx, "outcome": w.outcome,
+            "read_tokens_est": w.read_tokens_est, "confidence": w.confidence,
+        }
+        for i, w in enumerate(stale_sorted, 1)
+    ]
+    stale_summary = {
+        "total": len(stale_dicts),
+        "never": sum(1 for d in stale_dicts if d["outcome"] == "never-re-read"),
+        "tokens_never": sum(d["read_tokens_est"] for d in stale_dicts
+                            if d["outcome"] == "never-re-read"),
+    }
+
     timeline = timeline_dicts(att.timeline, ts_reliable=not parsed.ts_out_of_order)
+    ts_by_idx: dict[int, str | None] = {}
+    for ev in parsed.events:
+        ts_by_idx.setdefault(ev.idx, ev.ts.isoformat() if ev.ts else None)
+    _inject_stale_rows(timeline, stale_dicts, ts_by_idx,
+                       order="ts" if not parsed.ts_out_of_order else "idx")
     _attach_ctx_tokens(timeline, context_samples)
+
+    self_derivation = (
+        aggregate_rows(fact_rows(facts, parsed.session_id)) if facts is not None else None
+    )
+    if self_derivation is None:
+        sd_summary = None
+    else:
+        sd_tokens = sum(r["tokens"] for r in self_derivation)
+        sd_summary = {
+            "tokens": sd_tokens,
+            "pct": (round(sd_tokens / facts_tool_output * 100, 1)
+                    if facts_tool_output else None),
+        }
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -222,6 +300,10 @@ def aggregate_session(parsed: ParsedSession, att: Attribution,
         "file_loads": file_loads,
         "context_samples": context_samples,
         "timeline": timeline,
+        "self_derivation": self_derivation,
+        "self_derivation_summary": sd_summary,
+        "stale_windows": stale_dicts,
+        "stale_summary": stale_summary,
         "static_context": {"total_tokens": static_total, "breakdown": breakdown[:10]},
         "warnings": warnings,
         "hints": [],
@@ -232,22 +314,18 @@ def _window_days(since_iso: str | None) -> float:
     if not since_iso:
         return 3650.0
     dt = datetime.fromisoformat(since_iso)
-    return max(1.0, (datetime.now(timezone.utc) - dt).total_seconds() / 86400)
+    return max(1.0, (datetime.now(UTC) - dt).total_seconds() / 86400)
 
 
 def aggregate_window(store: Store, components: list[Component], config: Config,
-                     since_iso: str | None, since_label: str,
-                     deadweight_only: bool = False) -> dict:
-    """Cross-session aggregate (report/deadweight, A4.3). Aggregation always recomputes from the DB."""
+                     since_iso: str | None, since_label: str) -> dict:
+    """Cross-session aggregate (report). Aggregation always recomputes from the DB."""
     comps = [c for c in components if not c.missing]
     sessions = store.sessions_since(since_iso)
     session_ids = [r["id"] for r in sessions]
     usage_rows = store.usages_for_sessions(session_ids)
 
-    per_comp: dict[str, dict] = defaultdict(
-        lambda: {"invoked": 0, "loaded": 0, "last_used": None, "confidence": "exact",
-                 "sessions_invoked": set()}
-    )
+    per_comp: dict[str, dict] = defaultdict(_empty_comp_info)
     git_commit_sessions: set[str] = set()
     cost_total = 0.0
     static_cost_total = 0.0
@@ -280,26 +358,21 @@ def aggregate_window(store: Store, components: list[Component], config: Config,
             started = session_start.get(row["session_id"])
             if started and (info["last_used"] is None or started > info["last_used"]):
                 info["last_used"] = started
-            if row["state"] == "invoked":
-                info["sessions_invoked"].add(row["session_id"])
 
-    # hook MISS: count of sessions where the manifest miss_when event occurred but the hook has no trigger record (A2.3)
+    # hook MISS: count of sessions where the manifest miss_when event occurred but the hook has no trigger record
     hook_invoked_sessions: dict[str, set[str]] = defaultdict(set)
     for row in usage_rows:
         if row["state"] == "invoked" and not row["component_id"].startswith("_"):
             hook_invoked_sessions[row["component_id"]].add(row["session_id"])
 
     window_days = _window_days(since_iso)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     low_max = config.low_use_max_count
 
     rows = []
-    deadweight_tokens = 0
-    deadweight_static_tokens = 0  # static-injection portion of deadweight components (for share/cost estimate, A9)
     has_sessions = bool(sessions)
     for c in comps:
-        info = per_comp.get(c.id, {"invoked": 0, "loaded": 0, "last_used": None,
-                                   "confidence": "exact", "sessions_invoked": set()})
+        info = per_comp.get(c.id) or _empty_comp_info()
         observable_l_or_i = "loaded" in c.states or "invoked" in c.states
         primary = info["invoked"] if "invoked" in c.states else info["loaded"]
         used_any = (info["invoked"] + info["loaded"]) > 0
@@ -309,13 +382,13 @@ def aggregate_window(store: Store, components: list[Component], config: Config,
             invoked_in = hook_invoked_sessions.get(c.id, set())
             miss_count = len(git_commit_sessions - invoked_in)
 
-        # Status-verdict vocabulary (A2.3), neutral wording
+        # Status vocabulary, neutral wording
         stale = False
         if info["last_used"]:
             age_days = (now - datetime.fromisoformat(info["last_used"])).total_seconds() / 86400
             stale = age_days > window_days * 2 / 3
         if not has_sessions:
-            # zero observed sessions can prove nothing — a deadweight verdict here would
+            # zero observed sessions can prove nothing — an unused label here would
             # tell the user to delete a scaffold that was simply never measured
             status = "no data"
         elif c.type == "hook":
@@ -328,10 +401,8 @@ def aggregate_window(store: Store, components: list[Component], config: Config,
             if miss_count and info["invoked"] > 0:
                 status += f" ({miss_count} MISS ⚠, heuristic)"
         elif not used_any and observable_l_or_i:
-            # root/global claude_md is always L, never falls into deadweight (L every session)
-            status = f"☠ deadweight ({_display_tokens(c):,} tokens)"
-            deadweight_tokens += _display_tokens(c)
-            deadweight_static_tokens += c.static_tokens
+            # root/global claude_md is always L, never lands here (L every session)
+            status = "unused"
         elif primary <= low_max or stale:
             status = "low-use"
         else:
@@ -349,18 +420,13 @@ def aggregate_window(store: Store, components: list[Component], config: Config,
                 "last_used": info["last_used"],
                 "status": status,
                 "miss_count": miss_count,
-                "tokens": _display_tokens(c),
                 "confidence": info["confidence"],
-                "dead": status.startswith("☠ deadweight")
-                or status.startswith("☠ never triggered"),
+                "unused": status == "unused",
             }
         )
     rows.sort(key=lambda r: (-r["primary_count"], r["id"]))
 
     static_total, _ = _static_breakdown(comps)
-    dw_cost = deadweight_cost(
-        static_cost_total if cost_available else None, deadweight_static_tokens, static_total
-    )
 
     # Daily activity
     day_counts: dict[str, int] = defaultdict(int)
@@ -383,9 +449,6 @@ def aggregate_window(store: Store, components: list[Component], config: Config,
 
     hints = []
     if has_sessions:  # usage hints presume usage data; with none they are noise
-        small_window = window_days < config.deadweight_min_window_days or len(sessions) < config.deadweight_min_sessions
-        if deadweight_only and small_window:
-            hints.append(HINT_EXPAND_WINDOW)
         if any(r["status"].startswith("low-use") for r in rows):
             hints.append(HINT_LOW_USE)
         root = next((c for c in comps if c.id == "claude-md:root"), None)
@@ -396,7 +459,7 @@ def aggregate_window(store: Store, components: list[Component], config: Config,
     if not has_sessions:
         warnings.append(
             "⚠ no ingested sessions in window — usage cannot be judged; "
-            "run `context-render sync` or widen --since"
+            "run `ctxr sync` or widen --since"
         )
     if config.billing == "auto":
         warnings.append(
@@ -407,9 +470,19 @@ def aggregate_window(store: Store, components: list[Component], config: Config,
     if degraded_n:
         warnings.append(f"⚠ {degraded_n} session(s) parse-degraded (details in sync stderr)")
 
+    # Window-scope self-derivation (the former `analyze` table) rides in the same report;
+    # its no-sessions warning duplicates ours, so only its coverage warning is merged.
+    sd_agg, _ = aggregate_analyze(store, config, since_iso=since_iso, since_label=since_label)
+    if has_sessions:
+        warnings.extend(sd_agg["warnings"])
+
     return {
         "schema_version": SCHEMA_VERSION,
-        "report_type": "deadweight" if deadweight_only else "report",
+        "report_type": "report",
+        "self_derivation": sd_agg["rows"],
+        "self_derivation_summary": {
+            **sd_agg["summary"], "facts_sessions": sd_agg["window"]["facts_sessions"],
+        },
         "window": {
             "label": since_label,
             "since": since_iso,
@@ -418,15 +491,8 @@ def aggregate_window(store: Store, components: list[Component], config: Config,
             "project": sessions[0]["project"] if sessions else "?",
         },
         "billing": config.billing,
-        "components": [r for r in rows if (not deadweight_only or r["dead"])],
+        "components": rows,
         "daily": daily,
-        "deadweight": {
-            "tokens": deadweight_tokens,
-            "static_tokens": deadweight_static_tokens,
-            "pct": round(deadweight_static_tokens / static_total * 100, 1)
-            if static_total else 0.0,
-            "cost_usd": dw_cost,
-        },
         "static": {
             "total_tokens": static_total,
             "cost_usd": round(static_cost_total, 4) if cost_available else None,

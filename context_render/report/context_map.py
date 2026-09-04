@@ -30,7 +30,7 @@ that caused them. x-position is by event *rank* among displayed events — raw f
 numbers would let timeline-invisible lines (e.g. sidechains) squeeze all activity into
 a corner.
 
-Pure stdlib drawing; fixed width so terminal and md forms emit identical lines (AC3/AC9).
+Pure stdlib drawing; fixed width so terminal and md forms emit identical lines.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from __future__ import annotations
 import math
 
 from .ansi import Style
-from .charts import _short
+from .charts import FILL, _short  # FILL: 9 levels; 0 unused in event lanes (min ▁)
 from .timeline import _fmt_ts
 
 WIDTH = 60  # bar interior columns; fixed for cross-form line identity
@@ -47,7 +47,6 @@ WIDTH = 60  # bar interior columns; fixed for cross-form line identity
 # the denominator then snaps to the smallest tier that fits (peak itself as last resort).
 WINDOW_TIERS = (200_000, 1_000_000)
 GUTTER = 10  # row-label gutter before the bar's left border
-FILL = " ▁▂▃▄▅▆▇█"  # 9 levels; 0 unused in event lanes (any event gets at least ▁)
 MAX_LANES = 3  # label lanes per side
 
 
@@ -149,8 +148,8 @@ def context_map_lines(timeline: list[dict], samples: list[dict],
     gut = " " * GUTTER
     border = style.dim("│")
     lines = [head]
-    for lane in reversed(_label_lanes(loads)):
-        lines.append((gut + " " + style.cyan(lane)).rstrip())
+    lines.extend((gut + " " + style.cyan(lane)).rstrip()
+                 for lane in reversed(_label_lanes(loads)))
     lines.append(f"{'  loads':<{GUTTER}} {style.cyan(_arrow_row({b for b, _ in loads}, '▼'))}".rstrip())
     lines.append(gut + style.dim("┌" + "─" * WIDTH + "┐"))
     lines.append(gut + border
@@ -161,8 +160,7 @@ def context_map_lines(timeline: list[dict], samples: list[dict],
                  + border + " " + style.yellow("▲") + style.dim(" actions"))
     lines.append(gut + style.dim("└" + "─" * WIDTH + "┘"))
     lines.append(f"{'  actions':<{GUTTER}} {style.yellow(_arrow_row({b for b, _ in acts}, '▲'))}".rstrip())
-    for lane in _label_lanes(acts):
-        lines.append((gut + " " + style.yellow(lane)).rstrip())
+    lines.extend((gut + " " + style.yellow(lane)).rstrip() for lane in _label_lanes(acts))
 
     # second bar: window occupancy (green, linear vs the model window, carried forward)
     if samples:

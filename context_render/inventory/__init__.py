@@ -1,2 +1,8 @@
-from .scanner import Component, scan_components, load_manifest, write_manifest, merge_refresh  # noqa: F401
+from .scanner import (  # noqa: F401
+    Component,
+    load_manifest,
+    merge_refresh,
+    scan_components,
+    write_manifest,
+)
 from .tokens import estimate_tokens  # noqa: F401

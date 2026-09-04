@@ -1,4 +1,4 @@
-"""Bash heuristics (A7.6): git commit forms × file reads; each false negative documented via xfail (AC2)."""
+"""Bash heuristics: git commit forms × file reads; each false negative documented via xfail."""
 
 import pytest
 
@@ -115,6 +115,19 @@ class TestValueFlagFalsePositive:
         # -e supplies the pattern → the first positional is a file, not a pattern to skip
         assert bh.extract_read_paths("grep -e TODO src/x.py", "/repo") == ["/repo/src/x.py"]
 
+    def test_posix_grep_dash_r_is_not_a_value_flag(self):
+        """Regression: rg's -r takes a value (--replace) but POSIX grep's -r is flagless
+        (recursive). Using the shared rg set for grep consumed the pattern as the flag's
+        "value" and then dropped the real file as the presumed pattern — a false negative
+        in one of the most common command shapes (facts.py already forked its set for
+        exactly this hazard; extract_read_paths now picks per command head)."""
+        assert bh.extract_read_paths("grep -r TODO notes.md", "/repo") == ["/repo/notes.md"]
+
+    def test_rg_dash_r_still_consumes_its_replacement_value(self):
+        # for rg, -r REPL must be consumed or REPL shifts into the pattern slot
+        # and the real pattern becomes a candidate path
+        assert bh.extract_read_paths("rg -r new old src/x.py", "/repo") == ["/repo/src/x.py"]
+
     def test_inline_value_unaffected(self):
         # inline forms stay inside the flag token; the positional skip still applies
         assert bh.extract_read_paths("grep -A3 TODO src/x.py", "/repo") == ["/repo/src/x.py"]
@@ -148,3 +161,27 @@ class TestNewlineSegmentation:
 
     def test_separator_run_is_one_boundary(self):
         assert bh.split_segments("foo &&\nbar") == [["foo"], ["bar"]]
+
+
+class TestGitSubcommandResolution:
+    """How a git segment is read: global flags are skipped (value flags with their value),
+    the first remaining token is the subcommand. Characterized here because three
+    modules (commit detection, git grep facts, wildcard mutations) share this reading."""
+
+    def test_valueless_global_flag_skipped(self):
+        assert bh.detect_git_commit("git --no-pager commit -m 'x'", COMMIT_OK)
+
+    def test_value_flag_consumes_its_value(self):
+        # `-c key=val` takes a value: the value must not be read as the subcommand
+        assert bh.detect_git_commit("git -c user.name=x commit -m 'y'", COMMIT_OK)
+
+    def test_flags_only_is_not_a_commit(self):
+        assert not bh.detect_git_commit("git -C /repo", COMMIT_OK)
+        assert not bh.detect_git_commit("git", COMMIT_OK)
+
+    def test_absolute_git_binary(self):
+        assert bh.detect_git_commit("/usr/bin/git commit -m 'z'", COMMIT_OK)
+
+    def test_flag_value_spelled_commit_is_not_the_subcommand(self):
+        # the token after -C is a directory, even when it is spelled "commit"
+        assert not bh.detect_git_commit("git -C commit status", COMMIT_OK)

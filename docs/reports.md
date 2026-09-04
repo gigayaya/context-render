@@ -1,6 +1,6 @@
 # Reading the reports
 
-Anatomy of the session report (`last` / `sessions <id-prefix>`) and output conventions shared by all commands.
+Anatomy of the session report (`sessions <id-prefix>`) and output conventions shared by all commands.
 
 ## File loads (context injection order)
 
@@ -48,6 +48,16 @@ Subagent transcripts (stored by Claude Code as separate files under `<session-id
 
 Each subagent runs in **its own context window**, so the window-shaped views stay main-chain only: sidechain reads don't enter file loads (context injection order), and the context window map and occupancy bar don't draw sidechain events. Session stats (turns, task digest) also stay main-chain — a subagent's "user" message is the dispatch prompt the main agent wrote, not a user turn.
 
+## Aggregate report (`ctxr report`)
+
+The window report ends with a **SELF-DERIVATION** block: the same rows as the session block, aggregated across every session in the window, with a `sessions` column and the facts coverage in its title (`facts: N of M sessions` — sessions whose transcripts expired before facts extraction count in M but not N). The terminal shows the top 10 rows by token cost; `--md` writes the complete table. `--emit-prompt <#|key>` prints one row's full evidence as a plain-text drafting prompt instead of the report (row numbers follow the current sort and are unstable across runs; the canonical key isn't).
+
+## Map report (`ctxr map`)
+
+Five blocks, top to bottom: **guidance carriers** (each CLAUDE.md and `@import`ed file with its loading kind, prose share, and label counts), **structure** (hop-depth distribution and the optional lists: files beyond 3 hops, lazily referenced `.md`, imports that don't resolve in the repo or sit past the depth limit, duplicate routes), **dead routes** (references whose targets no longer resolve — printed once, in two sections), **coverage** (Python files and symbols reachable from root, then unreachable `.py` sorted by observed search cost, then reachable files that were still grepped), and a closing literature note. `~` marks heuristic sections. With no db the cost columns are zero and the report says so; run `ctxr sync` to fill them.
+
+The dead-route block is split by where the unresolvable reference lives. **dead routes (guidance carriers)** covers the audited carriers — every CLAUDE.md plus the `@import` closure — so these rows are the map's own staleness: a path the guidance still routes to that the repo no longer has. **stale references in referenced docs ~** covers every other reachable `.md` the report walked (`README.md`, `docs/*.md`, anything a carrier links to); it is the superset the old `coverage` report listed, kept because an agent following the map does reach those files, and it is heuristic — path-shaped strings in prose (`*.py` in a sentence about test naming) land here as artefacts, hence the `~`. Both sections are truncated in the terminal; `--md` prints them in full.
+
 ## Common flags and conventions
 
 - `--since` accepts `30d` / `12w` / `2026-06-01` (by started_at, local timezone).
@@ -57,7 +67,7 @@ Each subagent runs in **its own context window**, so the window-shaped views sta
 
 ## Terminal colors
 
-ANSI colors are enabled automatically when stdout is a tty (invoked green, loaded cyan, deadweight/MISS red, warnings yellow, unused rows dimmed); set `NO_COLOR` to disable, `CLICOLOR_FORCE=1` to force on (pairs with `less -R`).
+ANSI colors are enabled automatically when stdout is a tty (invoked green, loaded cyan, a session-report MISS red, never-triggered hooks red, low-use rows and MISS-annotated aggregate rows yellow, warnings yellow, unused rows dimmed); set `NO_COLOR` to disable, `CLICOLOR_FORCE=1` to force on (pairs with `less -R`).
 
 On the timeline the action tags are also colored: `[read]` blue, `[edit]`/`[write]` yellow, `[bash]` and compaction magenta, component `[L]` cyan, `[I]` green, and any `(failed)` marker red.
 
