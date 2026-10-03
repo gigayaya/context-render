@@ -52,14 +52,14 @@ async function withSnapshot($: any, on: On, reply: () => Reply = OK) {
   return { clock, runs }
 }
 
-test('draws the map, the axis and the recent events', async ($, on) => {
+test('draws the map and the axis, no recent-event lines', async ($, on) => {
   await withSnapshot($, on)
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: 'ctxr-live', surface, ...BAND() })
     expect(await ui.find({ type: 'Text', text: /context window map/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /14:00:00/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '#2 ▼ L claude-md:root  exact  739 tok' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /#3 ▲ act Bash pytest {2}heuristic/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /#2 ▼/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /#3 ▲/ })).toBeUndefined()
     await ui.unmount()
   }
 })
@@ -115,12 +115,12 @@ test('a failed refresh keeps the map and marks it stale', async ($, on) => {
   }
 })
 
-test('degrades: recent lines go first when rows are short', async ($, on) => {
+test('degrades: the axis goes when rows are short', async ($, on) => {
   await withSnapshot($, on)
   for (const surface of SURFACES) {
-    const ui = await $.ui.mount({ plugin: 'ctxr-live', surface, ...BAND({ maxRows: 4 }) })
-    expect(await ui.find({ type: 'Text', text: /#2 ▼/ })).toBeUndefined()
-    expect(await ui.find({ type: 'Text', text: /14:00:00/ })).toBeDefined()
+    const ui = await $.ui.mount({ plugin: 'ctxr-live', surface, ...BAND({ maxRows: 3 }) })
+    expect(await ui.find({ type: 'Text', text: /context window map/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /14:00:00/ })).toBeUndefined()
     await ui.unmount()
   }
 })

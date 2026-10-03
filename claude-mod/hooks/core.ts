@@ -80,14 +80,6 @@ export function shortTokens(n: number): string {
   return String(n)
 }
 
-// same classification as context_map_parts: loads above the bar, actions below
-export function eventSide(row: TimelineRow): 'load' | 'action' | null {
-  if (row.kind === 'compaction') return null
-  if (row.kind === 'file_read' || row.transition === 'loaded') return 'load'
-  if (row.kind === 'action' || row.transition === 'invoked') return 'action'
-  return null
-}
-
 export function rowTag(row: TimelineRow): string {
   if (row.kind === 'compaction') return '⟐'
   if (row.kind === 'session_start') return 'start'
@@ -97,16 +89,6 @@ export function rowTag(row: TimelineRow): string {
   if (row.kind === 'file_read') return 'read'
   if (row.kind === 'action') return 'act'
   return row.kind
-}
-
-export function recentEvents(timeline: TimelineRow[], n = 3): TimelineRow[] {
-  return timeline.filter(row => !row.sidechain && eventSide(row) !== null).slice(-n)
-}
-
-export function eventLine(row: TimelineRow): string {
-  const arrow = eventSide(row) === 'load' ? '▼' : '▲'
-  const tokens = row.est_tokens ? `  ${shortTokens(row.est_tokens)} tok` : ''
-  return `#${row.no} ${arrow} ${rowTag(row)} ${row.component ?? row.detail}  ${row.confidence}${tokens}`
 }
 
 export function hhmmss(ts: string | null): string {
@@ -122,14 +104,18 @@ export function timelineLine(row: TimelineRow): string {
   return `${String(row.no).padStart(3)} ${hhmmss(row.ts)} ${ctx.padStart(6)} ─ ${rowTag(row)}${mark} ${what}`
 }
 
-export type BandPlan = { map: Seg[][]; axis: Seg[] | null; recent: TimelineRow[] }
+export type BandPlan = { map: Seg[][]; axis: Seg[] | null }
 
-// degrade order when the band has fewer rows than the full drawing: recent lines, then the axis
+// the band leaves out the occupancy bar: the `window` row plus the box borders around it
+export function withoutOccupancy(map: Seg[][]): Seg[][] {
+  const at = map.findIndex(segs => segs[0]?.t.trim() === 'window')
+  return at < 0 ? map : [...map.slice(0, Math.max(0, at - 1)), ...map.slice(at + 2)]
+}
+
+// when the band has fewer rows than the full drawing, the axis goes first
 export function planBand(s: Snapshot, maxRows: number, hasWarnings: boolean): BandPlan {
-  const recent = recentEvents(s.timeline)
-  const fixed = s.map.length + (hasWarnings ? 1 : 0)
+  const map = withoutOccupancy(s.map)
+  const fixed = map.length + (hasWarnings ? 1 : 0)
   const axisRows = s.axis ? 1 : 0
-  if (fixed + axisRows + recent.length <= maxRows) return { map: s.map, axis: s.axis, recent }
-  if (fixed + axisRows <= maxRows) return { map: s.map, axis: s.axis, recent: [] }
-  return { map: s.map, axis: null, recent: [] }
+  return { map, axis: fixed + axisRows <= maxRows ? s.axis : null }
 }

@@ -1,7 +1,7 @@
 import type { Elements, RenderSurface } from 'claude-code'
 
 import type { Role, Seg, Snapshot, TimelineRow } from '../types'
-import { eventLine, MIN_BODY, planBand, rowTag, shortTokens, timelineLine } from './core'
+import { MIN_BODY, planBand, rowTag, shortTokens, timelineLine } from './core'
 
 export type Kit = Pick<Elements[RenderSurface], 'Box' | 'Text'>
 
@@ -99,11 +99,6 @@ export function bandTree(kit: Kit, input: BandInput) {
       )}
       {plan.axis && segRow(kit, plan.axis, 'axis', false, byNo)}
       {warnings && <Text key="warn" dimColor wrap="truncate-end">{warnings}</Text>}
-      {plan.recent.map(row => (
-        <Text key={`r${row.no}`} dimColor={row.confidence === 'heuristic'} wrap="truncate-end">
-          {eventLine(row)}
-        </Text>
-      ))}
     </Box>
   )
 }

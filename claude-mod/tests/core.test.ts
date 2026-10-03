@@ -1,14 +1,12 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { Snapshot, TimelineRow } from '../types'
+import type { Seg, Snapshot, TimelineRow } from '../types'
 import {
-  eventLine,
   hhmmss,
   innerWidth,
   liveArgv,
   parseRun,
   planBand,
-  recentEvents,
   rowTag,
   shortTokens,
   spawnFailed,
@@ -78,17 +76,7 @@ describe('parseRun', () => {
   })
 })
 
-describe('event lines', () => {
-  test('recentEvents keeps the last main-window loads and actions', () => {
-    expect(recentEvents(snap().timeline).map(r => r.no)).toEqual([2, 3, 4])
-    expect(recentEvents(snap().timeline, 1).map(r => r.no)).toEqual([4])
-  })
-  test('eventLine', () => {
-    const [l, r, a] = recentEvents(snap().timeline)
-    expect(eventLine(l!)).toBe('#2 ▼ L claude-md:root  exact  739 tok')
-    expect(eventLine(r!)).toBe('#3 ▼ read Read a.md  heuristic  1.2k tok')
-    expect(eventLine(a!)).toBe('#4 ▲ act Bash pytest  exact')
-  })
+describe('timeline lines', () => {
   test('rowTag covers non-event rows', () => {
     expect(rowTag(row(1, { kind: 'session_start' }))).toBe('start')
     expect(rowTag(row(1, { kind: 'compaction' }))).toBe('⟐')
@@ -111,12 +99,25 @@ describe('event lines', () => {
 describe('planBand degrades by maxRows', () => {
   test('everything fits', () => {
     const p = planBand(snap(), 20, false)
-    expect([p.map.length, p.axis !== null, p.recent.length]).toEqual([10, true, 3])
+    expect([p.map.length, p.axis !== null]).toEqual([10, true])
   })
-  test('drops recent lines first, then the axis', () => {
-    expect(planBand(snap(), 11, false).recent).toEqual([])
+  test('drops the axis when rows are short', () => {
     expect(planBand(snap(), 11, false).axis).not.toBeNull()
     expect(planBand(snap(), 10, false).axis).toBeNull()
     expect(planBand(snap(), 11, true).axis).toBeNull() // the warnings line takes a row
+  })
+  test('leaves out the occupancy bar (window row and its borders)', () => {
+    const seg = (t: string, role: Seg['role'] = null): Seg => ({ t, role, no: null })
+    const box = [seg('          '), seg('└──┘', 'dim')]
+    const map = [
+      [seg('  '), seg('context window map', 'bold')],
+      box,
+      [seg('          '), seg('┌──┐', 'dim')],
+      [seg('  window  '), seg('│', 'dim'), seg('▂', 'occupancy'), seg('│', 'dim')],
+      [seg('          '), seg('└──┘', 'dim')],
+    ]
+    const p = planBand(snap({ map }), 20, false)
+    expect(p.map).toEqual(map.slice(0, 2))
+    expect(planBand(snap({ map: map.slice(0, 2) }), 20, false).map).toEqual(map.slice(0, 2))
   })
 })
