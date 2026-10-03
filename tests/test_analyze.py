@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 from typer.testing import CliRunner
 
@@ -25,7 +26,15 @@ from context_render.report.render_term import (
 )
 from context_render.report.selfderive import aggregate_analyze, aggregate_rows, select_row
 from context_render.store import FACTS_CID, Store
-from tests.conftest import USAGE, assistant, make_transcript, tool_result, tool_use, user_text
+from tests.conftest import (
+    BASE_TS,
+    USAGE,
+    assistant,
+    make_transcript,
+    tool_result,
+    tool_use,
+    user_text,
+)
 
 runner = CliRunner()
 
@@ -350,6 +359,10 @@ def test_analyze_counts_uncovered_sessions(fake_repo, fake_projects):
 
 # ---- CLI ----
 
+def _fixture_start() -> datetime:
+    return datetime.fromisoformat(BASE_TS.format(m=0, s=0).replace("Z", "+00:00"))
+
+
 def test_report_selfderive_cli(fake_repo, fake_projects, monkeypatch):
     monkeypatch.chdir(fake_repo)
     monkeypatch.setenv("CONTEXT_RENDER_PROJECTS_DIR", str(fake_projects))
@@ -358,27 +371,29 @@ def test_report_selfderive_cli(fake_repo, fake_projects, monkeypatch):
     runner.invoke(app, ["init", "--yes", "--no-hook"])
     assert runner.invoke(app, ["sync"]).exit_code == 0
 
-    r = runner.invoke(app, ["report", "--since", "12w"])
+    # relative window wide enough to reach the fixture's pinned BASE_TS from today
+    since = f"{(datetime.now(UTC) - _fixture_start()).days // 7 + 2}w"
+    r = runner.invoke(app, ["report", "--since", since])
     assert r.exit_code == 0, r.output
-    assert "Observation window: last 12w" in r.output
+    assert f"Observation window: last {since}" in r.output
     assert "SELF-DERIVATION" in r.output
     assert "repo layout" in r.output
 
-    r_md = runner.invoke(app, ["report", "--since", "12w", "--md"])
+    r_md = runner.invoke(app, ["report", "--since", since, "--md"])
     assert r_md.exit_code == 0
     reports_dir = fake_repo / ".context-render" / "reports"
     assert len(list(reports_dir.glob("report-*.md"))) == 1
     assert not list(reports_dir.glob("analyze-*.md"))
 
     # emit-prompt by canonical key (row numbers also accepted but unstable across runs)
-    r_p = runner.invoke(app, ["report", "--since", "12w", "--emit-prompt", "repo layout"])
+    r_p = runner.invoke(app, ["report", "--since", since, "--emit-prompt", "repo layout"])
     assert r_p.exit_code == 0, r_p.output
     assert "what the agent was after: repo layout" in r_p.output
     assert "find . -type d" in r_p.output
     assert "does not" in r_p.output  # no scaffold-form recommendation
     assert "ctxr analyze" not in r_p.output
 
-    r_n = runner.invoke(app, ["report", "--since", "12w", "--emit-prompt", "1"])
+    r_n = runner.invoke(app, ["report", "--since", since, "--emit-prompt", "1"])
     assert r_n.exit_code == 0
     assert "evidence (session" in r_n.output
 
