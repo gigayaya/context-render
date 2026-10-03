@@ -1,4 +1,4 @@
-"""Version detection and support matrix (A5.3; spike #10 initial = 2.1.x)."""
+"""Version detection and support matrix (initial = 2.1.x)."""
 
 from __future__ import annotations
 

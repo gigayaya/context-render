@@ -1,4 +1,4 @@
-"""inventory tests (AC1): scan rules, static/dynamic classification, miss_when inference, refresh merge."""
+"""inventory tests: scan rules, static/dynamic classification, miss_when inference, refresh merge."""
 
 import json
 
@@ -24,7 +24,7 @@ def _hook(comps, event):
 def test_scan_sources_and_classification(fake_repo):
     comps = _local(scan_components(fake_repo))
     assert comps["claude-md:root"].context == "static"
-    assert comps["claude-md:src-api"].context == "dynamic"  # subdirectory = dynamic (AC1)
+    assert comps["claude-md:src-api"].context == "dynamic"  # subdirectory = dynamic
     skill = comps["skill:db-migrate"]
     assert skill.tokens_meta_est > 0 and skill.tokens_body_est > 0
     assert comps["command:release"].context == "dynamic"
@@ -33,9 +33,9 @@ def test_scan_sources_and_classification(fake_repo):
     hook = _hook(comps.values(), "PreToolUse")
     assert hook.id.startswith("hook:PreToolUse-Bash-")  # content digest, not list position
     assert hook.tokens_est == 0
-    assert hook.miss_when == "git_commit"  # auto-inference tentative (§8)
+    assert hook.miss_when == "git_commit"  # auto-inference tentative
     assert _hook(comps.values(), "PostToolUse").miss_when is None
-    # states per the A2.2 matrix
+    # states per the applicability matrix
     assert comps["skill:db-migrate"].states == ["registered", "loaded", "invoked"]
     assert comps["claude-md:root"].states == ["registered", "loaded"]
 
@@ -132,6 +132,34 @@ def test_identical_hook_groups_get_distinct_ids(fake_repo):
              if c.type == "hook" and c.hook_event == "PreToolUse" and c.provenance == "local"]
     assert len(hooks) == 2
     assert len({c.id for c in hooks}) == 2  # deterministic tiebreak, no collision
+
+
+def test_deduped_id_roundtrips_name():
+    """Regression: attribution matches components by NAME (rules._index), so a
+    dedupe-suffixed id (skill:x@plugin) must round-trip through the manifest with name
+    `x`, not `x@plugin` — the suffixed entry otherwise never receives another L/I."""
+    c = Component(id="skill:db-migrate@plugin", type="skill", name="db-migrate",
+                  context="dynamic", provenance="plugin", source="plugin:myplug",
+                  states=STATES["skill"])
+    assert Component.from_yaml_dict(c.to_yaml_dict()).name == "db-migrate"
+    # manifests written before the explicit `name` field: suffix stripped on re-derive
+    legacy = c.to_yaml_dict()
+    legacy.pop("name")
+    assert Component.from_yaml_dict(legacy).name == "db-migrate"
+
+
+def test_dedupe_triple_collision_keeps_ids_unique():
+    """Two plugins shipping the same command collide on the same @plugin suffix; a
+    counter keeps ids unique so their usage rows never conflate."""
+    from context_render.inventory.scanner import _dedupe
+
+    def cmd(prov):
+        return Component(id="command:commit", type="command", name="commit",
+                         context="dynamic", provenance=prov, states=STATES["command"])
+
+    out = _dedupe([cmd("local"), cmd("plugin"), cmd("plugin")])
+    assert len(out) == 3
+    assert len({c.id for c in out}) == 3
 
 
 def test_token_estimate_cjk():

@@ -1,4 +1,4 @@
-"""Scaffolding scan and manifest generation (A6).
+"""Scaffolding scan and manifest generation.
 
 The manifest is hand-editable and version-controlled — the scaffolding list is itself part of
 the scaffolding. It is the asset you author; the DB is the asset you cannot re-derive (see
@@ -7,6 +7,7 @@ store/db.py: transcripts expire, its rows do not).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import re
@@ -20,7 +21,11 @@ from .tokens import estimate_tokens
 
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".context-render", "dist", "build"}
 
-STATES = {  # A2.2 three-state applicability matrix
+# _dedupe id suffixes (`@provenance` or `@provenance-N`), recognized when re-deriving a
+# component name from an old manifest that predates the explicit `name` field
+_DEDUPE_SUFFIX_RE = re.compile(r"@(?:local|global|plugin)(?:-\d+)?$")
+
+STATES = {  # three-state applicability matrix
     "skill": ["registered", "loaded", "invoked"],
     "command": ["registered", "invoked"],
     "subagent": ["registered", "invoked"],
@@ -54,19 +59,13 @@ class Component:
 
     @property
     def static_tokens(self) -> int:
-        """static total contribution: for skills, count only the metadata part (A6.1)."""
+        """static total contribution: for skills, count only the metadata part."""
         if self.type == "skill":
             return self.tokens_meta_est or 0
-        return self.tokens_est or 0 if self.context == "static" else 0
-
-    @property
-    def dead_weight_tokens(self) -> int:
-        if self.type == "skill":
-            return (self.tokens_meta_est or 0) + (self.tokens_body_est or 0)
-        return self.tokens_est or 0
+        return (self.tokens_est or 0) if self.context == "static" else 0
 
     def to_yaml_dict(self) -> dict:
-        d: dict = {"id": self.id, "type": self.type}
+        d: dict = {"id": self.id, "type": self.type, "name": self.name}
         if self.path:
             d["path"] = self.path
         if self.source:
@@ -94,13 +93,19 @@ class Component:
         return d
 
     @classmethod
-    def from_yaml_dict(cls, d: dict) -> "Component":
+    def from_yaml_dict(cls, d: dict) -> Component:
         cid = str(d.get("id", ""))
-        name = cid.split(":", 1)[1] if ":" in cid else cid
+        name = d.get("name")
+        if not name:
+            # manifests written before the explicit name field: re-derive from the id,
+            # stripping the _dedupe provenance suffix — attribution matches by name
+            # (rules._index), so `skill:x@plugin` must round-trip to name `x`, not `x@plugin`
+            name = cid.split(":", 1)[1] if ":" in cid else cid
+            name = _DEDUPE_SUFFIX_RE.sub("", name)
         return cls(
             id=cid,
             type=str(d.get("type", "file")),
-            name=name,
+            name=str(name),
             context=str(d.get("context", "dynamic")),
             provenance=str(d.get("provenance", "local")),
             path=d.get("path"),
@@ -141,10 +146,9 @@ def _split_frontmatter(text: str) -> tuple[str, str]:
 def _scan_skills(base: Path, provenance: str, source_prefix: str | None,
                  repo_root: Path) -> list[Component]:
     out = []
-    skills_dir = base
-    if not skills_dir.is_dir():
+    if not base.is_dir():
         return out
-    for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
+    for skill_md in sorted(base.glob("*/SKILL.md")):
         name = skill_md.parent.name
         meta, body = _split_frontmatter(_read(skill_md))
         try:
@@ -157,7 +161,7 @@ def _scan_skills(base: Path, provenance: str, source_prefix: str | None,
                 context="dynamic",  # metadata=static, body=dynamic; tokens listed separately
                 provenance=provenance,
                 path=rel if provenance == "local" else None,
-                source=f"{source_prefix}" if source_prefix else (None if provenance == "local" else str(skill_md)),
+                source=source_prefix or (None if provenance == "local" else str(skill_md)),
                 states=STATES["skill"],
                 tokens_meta_est=estimate_tokens(meta),
                 tokens_body_est=estimate_tokens(body),
@@ -259,7 +263,7 @@ def _scan_hooks_from_settings(settings_path: Path, provenance: str,
             seen_names[name] = dup + 1
             if dup:
                 name = f"{name}-{dup + 1}"  # identical duplicate groups: deterministic tiebreak
-            # miss_when auto-inference tentative (§8): PreToolUse and matcher covers Bash/git → git_commit
+            # miss_when auto-inference tentative: PreToolUse and matcher covers Bash/git → git_commit
             miss_when = (
                 "git_commit"
                 if event == "PreToolUse" and _matcher_covers_bash(matcher)
@@ -340,15 +344,13 @@ def _scan_claude_md(repo_root: Path) -> list[Component]:
 
 
 def _enabled_plugins() -> list[tuple[str, Path]]:
-    """(plugin_name, install_path); include only those with settings enabledPlugins == true (spike #7)."""
+    """(plugin_name, install_path); include only those with settings enabledPlugins == true."""
     home = Path.home()
     settings = home / ".claude" / "settings.json"
     installed = home / ".claude" / "plugins" / "installed_plugins.json"
     enabled: dict[str, bool] = {}
-    try:
+    with contextlib.suppress(json.JSONDecodeError, AttributeError):
         enabled = json.loads(_read(settings)).get("enabledPlugins") or {}
-    except (json.JSONDecodeError, AttributeError):
-        pass
     try:
         plugins = json.loads(_read(installed)).get("plugins") or {}
     except (json.JSONDecodeError, AttributeError):
@@ -367,7 +369,7 @@ def _enabled_plugins() -> list[tuple[str, Path]]:
 
 
 def _scan_plugins(repo_root: Path) -> list[Component]:
-    """plugin components keep their native type; provenance=plugin, source=plugin:<name> (A6.1)."""
+    """plugin components keep their native type; provenance=plugin, source=plugin:<name>."""
     out: list[Component] = []
     for name, root in _enabled_plugins():
         src = f"plugin:{name}"
@@ -397,12 +399,19 @@ def _scan_plugins(repo_root: Path) -> list[Component]:
 
 
 def _dedupe(components: list[Component]) -> list[Component]:
-    """On id collision, suffix with provenance to disambiguate (e.g. a local and a plugin skill with the same name)."""
+    """On id collision, suffix with provenance to disambiguate (e.g. a local and a plugin skill
+    with the same name); a third same-provenance collision (two plugins shipping the same
+    command) gets a counter, so ids stay unique and usage rows never conflate."""
     seen: dict[str, Component] = {}
     out = []
     for c in components:
         if c.id in seen:
-            c.id = f"{c.id}@{c.provenance}"
+            cand = f"{c.id}@{c.provenance}"
+            n = 2
+            while cand in seen:
+                cand = f"{c.id}@{c.provenance}-{n}"
+                n += 1
+            c.id = cand
         seen[c.id] = c
         out.append(c)
     return out
@@ -441,11 +450,10 @@ def load_manifest(repo_root: Path) -> list[Component]:
     path = manifest_path(repo_root)
     if not path.is_file():
         raise PreconditionError(
-            f"manifest not found ({path}); run context-render init first"
+            f"manifest not found ({path}); run ctxr init first"
         )
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    comps = [Component.from_yaml_dict(d) for d in data.get("components") or []]
-    return comps
+    return [Component.from_yaml_dict(d) for d in data.get("components") or []]
 
 
 def write_manifest(repo_root: Path, components: list[Component]) -> Path:
@@ -460,7 +468,7 @@ def write_manifest(repo_root: Path, components: list[Component]) -> Path:
 
 
 def merge_refresh(old: list[Component], new: list[Component]) -> list[Component]:
-    """--refresh incremental merge (A3.2): append new components, mark disappeared as missing, keep user-edited fields, recompute tokens."""
+    """--refresh incremental merge: append new components, mark disappeared as missing, keep user-edited fields, recompute tokens."""
     def key(c: Component) -> tuple:
         # name must be part of the key: components without their own path (plugin members,
         # mcp servers) share one source, and a coarser key collapses them into each other
@@ -483,7 +491,5 @@ def merge_refresh(old: list[Component], new: list[Component]) -> list[Component]
             nc.miss_when = oc.miss_when
         nc.missing = False
         merged.append(nc)
-    for c in new:
-        if key(c) not in old_keys:
-            merged.append(c)
+    merged.extend(c for c in new if key(c) not in old_keys)
     return merged

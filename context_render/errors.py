@@ -1,4 +1,4 @@
-"""Exit-code-3 precondition/environment errors (A3.1)."""
+"""Exit-code-3 precondition/environment errors."""
 
 
 class PreconditionError(Exception):

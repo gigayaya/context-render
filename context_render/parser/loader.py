@@ -1,7 +1,7 @@
-"""JSONL transcript → Event stream (A5.2).
+"""JSONL transcript → Event stream.
 
 Isolation principle: all transcript-format parsing is encapsulated in the parser layer; on an
-unknown event, degrade to a warning and continue — MUST NOT crash (AC5). Claude Code version
+unknown event, degrade to a warning and continue — MUST NOT crash. Claude Code version
 bumps only touch this layer.
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -23,12 +23,12 @@ EventKind = Literal[
     "tool_result",
     "hook",
     "summary",
-    "compaction",  # v3: per spike #11 (known-form recognition, samples locked with self-made fixtures)
+    "compaction",  # v3: known-form recognition, samples locked with self-made fixtures
     "system",
     "unknown",
 ]
 
-# spike side observation: known auxiliary types (do not trigger degraded), mapped to kind=system
+# known auxiliary types (do not trigger degraded), mapped to kind=system
 KNOWN_AUX_TYPES = {
     "attachment",
     "last-prompt",
@@ -39,6 +39,11 @@ KNOWN_AUX_TYPES = {
     "agent-name",
     "progress",
     "queue-operation",
+    # observed 2026-09-05 in cc 2.1.251–2.1.260
+    "atis-latch",
+    "bridge-session",
+    "cost-state",
+    "file-history-delta",
 }
 
 SKILL_BASE_DIR_PREFIX = "Base directory for this skill:"
@@ -66,10 +71,10 @@ class Event:
     model: str | None = None
     cwd: str | None = None
     raw_type: str = ""
-    # hook event (spike #5)
+    # hook event
     hook_name: str | None = None
     hook_event: str | None = None
-    # line-level skill attribution field (spike #3 auxiliary signal)
+    # line-level skill attribution field (auxiliary signal)
     attribution_skill: str | None = None
     is_sidechain: bool = False
     # subagent identity of a sidechain event (meta.json agentType, else the file's agent id)
@@ -96,13 +101,13 @@ def _parse_ts(value) -> datetime | None:
     if not isinstance(value, str):
         return None
     try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(value)  # py3.11+: trailing Z parsed natively
     except ValueError:
         return None
     # normalize to UTC: naive timestamps are treated as UTC, aware ones converted, so
     # mixed transcripts stay comparable (subtraction/sorting) and the isoformat strings
     # the DB stores and compares lexicographically all share one offset
-    return dt.astimezone(timezone.utc) if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(UTC) if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
 
 def _parse_usage(msg: dict) -> tuple[Usage | None, str | None]:
@@ -124,28 +129,27 @@ def _text_of_content(content) -> str:
         return content
     parts: list[str] = []
     if isinstance(content, list):
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                parts.append(block.get("text") or "")
+        parts.extend(block.get("text") or "" for block in content
+                     if isinstance(block, dict) and block.get("type") == "text")
     return "\n".join(parts)
 
 
 def _events_from_line(idx: int, obj: dict) -> list[Event]:
-    base = dict(
-        idx=idx,
-        ts=_parse_ts(obj.get("timestamp")),
-        cwd=obj.get("cwd"),
-        raw_type=str(obj.get("type", "")),
-        attribution_skill=obj.get("attributionSkill"),
-        is_sidechain=bool(obj.get("isSidechain")),
-    )
+    base = {
+        "idx": idx,
+        "ts": _parse_ts(obj.get("timestamp")),
+        "cwd": obj.get("cwd"),
+        "raw_type": str(obj.get("type", "")),
+        "attribution_skill": obj.get("attributionSkill"),
+        "is_sidechain": bool(obj.get("isSidechain")),
+    }
     t = obj.get("type")
     msg = obj.get("message") if isinstance(obj.get("message"), dict) else {}
     content = msg.get("content")
     out: list[Event] = []
 
     if t == "user":
-        # compaction summary (spike #11 known form)
+        # compaction summary (known form)
         if obj.get("isCompactSummary"):
             return [Event(**base, kind="compaction", text=_text_of_content(content))]
         emitted_text = False
@@ -182,24 +186,24 @@ def _events_from_line(idx: int, obj: dict) -> list[Event]:
                   text=_text_of_content(content))
         )
         if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "tool_use":
-                    out.append(
-                        Event(
-                            **base,
-                            kind="tool_use",
-                            tool_name=block.get("name"),
-                            tool_input=block.get("input")
-                            if isinstance(block.get("input"), dict)
-                            else None,
-                            tool_use_id=block.get("id"),
-                        )
-                    )
+            out.extend(
+                Event(
+                    **base,
+                    kind="tool_use",
+                    tool_name=block.get("name"),
+                    tool_input=block.get("input")
+                    if isinstance(block.get("input"), dict)
+                    else None,
+                    tool_use_id=block.get("id"),
+                )
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "tool_use"
+            )
         return out
 
     if t == "system":
         subtype = obj.get("subtype")
-        if subtype == "compact_boundary":  # spike #11 known form
+        if subtype == "compact_boundary":  # known form
             return [Event(**base, kind="compaction")]
         if subtype == "stop_hook_summary":
             infos = obj.get("hookInfos") if isinstance(obj.get("hookInfos"), list) else []
@@ -238,13 +242,24 @@ def _events_from_line(idx: int, obj: dict) -> list[Event]:
     return [Event(**base, kind="unknown")]
 
 
+def index_tool_results(events: list[Event]) -> dict[str, Event]:
+    """tool_use_id → the tool_result that answers it. The first result wins: a later line
+    carrying the same id is a re-emission, not the outcome the agent acted on. One
+    reading shared by attribution (rules), self-derivation facts and the stale gauge."""
+    results: dict[str, Event] = {}
+    for ev in events:
+        if ev.kind == "tool_result" and ev.tool_use_id and ev.tool_use_id not in results:
+            results[ev.tool_use_id] = ev
+    return results
+
+
 def _read_objs(path: Path) -> tuple[list[tuple[int, dict]], int]:
-    """(file line number, parsed object) pairs; bad lines are counted, never raised (AC5)."""
+    """(file line number, parsed object) pairs; bad lines are counted, never raised."""
     objs: list[tuple[int, dict]] = []
     bad = 0
     with open(path, encoding="utf-8", errors="replace") as fh:
-        for idx, line in enumerate(fh):
-            line = line.strip()
+        for idx, raw in enumerate(fh):
+            line = raw.strip()
             if not line:
                 continue
             try:
@@ -270,13 +285,13 @@ def _agent_label(path: Path) -> str | None:
     return v if isinstance(v, str) else None
 
 
-_MIN_TS = datetime.min.replace(tzinfo=timezone.utc)
+_MIN_TS = datetime.min.replace(tzinfo=UTC)
 
 
 def parse_file(path: Path, sidechains: Sequence[Path] = ()) -> ParsedSession:
-    """Parse line by line; fields are "use if present, degrade if missing", no strict schema validation (A5.3).
+    """Parse line by line; fields are "use if present, degrade if missing", no strict schema validation.
 
-    sidechains: this session's subagent transcripts (SPIKES.md W2: separate files under
+    sidechains: this session's subagent transcripts (separate files under
     <session-id>/subagents/). Their lines merge into one chronological stream — sorted by
     timestamp (fill-forward for ts-less lines, so intra-file order survives) and idx
     renumbered over the merged stream. Without sidechains idx stays the raw file line
@@ -323,8 +338,8 @@ def parse_file(path: Path, sidechains: Sequence[Path] = ()) -> ParsedSession:
     for idx, label, obj in stream:
         try:
             new_events = _events_from_line(idx, obj)
-        except Exception:
-            # any single-line parse error degrades, does not crash (AC5)
+        except Exception:  # noqa: BLE001 - degrade, never crash
+            # any single-line parse error degrades, does not crash
             bad_lines += 1
             continue
         for ev in new_events:
@@ -335,7 +350,7 @@ def parse_file(path: Path, sidechains: Sequence[Path] = ()) -> ParsedSession:
                 unknown_counts[ev.raw_type] = unknown_counts.get(ev.raw_type, 0) + 1
         events.extend(new_events)
 
-    # ts out-of-order detection (spike #1 degrade: timeline sorted by idx and marked "order inferred").
+    # ts out-of-order detection (degrade: timeline sorted by idx and marked "order inferred").
     # Parallel tool_result/sidechain interleaving within tens of seconds is common and normal; only a large regression degrades and is marked.
     prev = None
     out_of_order = False

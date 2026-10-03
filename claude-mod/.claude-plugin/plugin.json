@@ -1,0 +1,20 @@
+{
+  "name": "ctxr-live",
+  "version": "0.1.0",
+  "description": "Live context-window map from context-render above the prompt",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "command": {
+      "type": "string",
+      "title": "ctxr command",
+      "description": "How to run ctxr, space-separated (e.g. env PYTHONPATH=/repo /repo/.venv/bin/python -m context_render.cli)",
+      "default": "ctxr"
+    },
+    "debounceMs": {
+      "type": "number",
+      "title": "Refresh debounce (ms)",
+      "description": "Quiet time after a tool call before the map refreshes",
+      "default": 400
+    }
+  }
+}

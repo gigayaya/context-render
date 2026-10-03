@@ -1,4 +1,4 @@
-"""attributor tests (AC2): every type × every state × exact/heuristic; MISS; monotonicity."""
+"""attributor tests: every type × every state × exact/heuristic; MISS; monotonicity."""
 
 from dataclasses import replace
 
@@ -73,6 +73,29 @@ def test_full_matrix(tmp_path, fake_repo, rich_session_lines):
     assert att.summary_text == "Fix retry UI for login page timeout"
 
 
+def test_duplicate_tool_use_id_first_result_wins(tmp_path, fake_repo):
+    """Two tool_result lines for one tool_use_id: the first is the outcome the agent acted
+    on, a later re-emission never overrides it — the same reading facts.py and stale.py
+    apply (previously rules.py let the last one win)."""
+    cwd = str(fake_repo)
+    lines = [
+        assistant(0, cwd, [tool_use("Skill", {"skill": "db-migrate"}, "t1")]),
+        tool_result(1, cwd, "t1", "done"),
+        tool_result(2, cwd, "t1", "late duplicate", is_error=True),
+    ]
+    att, _ = _attribute(tmp_path, fake_repo, lines)
+    agg = _agg(att, "skill:db-migrate", "invoked")
+    assert agg is not None and agg.count == 1
+
+    reversed_lines = [
+        assistant(0, cwd, [tool_use("Skill", {"skill": "db-migrate"}, "t1")]),
+        tool_result(1, cwd, "t1", "boom", is_error=True),
+        tool_result(2, cwd, "t1", "late success"),
+    ]
+    att, _ = _attribute(tmp_path, fake_repo, reversed_lines)
+    assert _agg(att, "skill:db-migrate", "invoked") is None
+
+
 def test_skill_invoked_requires_ok_result(tmp_path, fake_repo):
     cwd = str(fake_repo)
     lines = [
@@ -110,6 +133,75 @@ def test_command_prefix_fallback(tmp_path, fake_repo):
     assert _agg(att, "command:release", "invoked") is not None
 
 
+def test_plugin_qualified_command_narrows_to_plugin_twin(tmp_path, fake_repo):
+    """A qualified marker (/plugin:release) misses the full-name index and falls back to
+    the short name narrowed by provenance — only the plugin twin is credited, exact."""
+    cwd = str(fake_repo)
+    twin = _plugin_twin(fake_repo, "release", "someplugin")
+    lines = [user_text(0, cwd, "<command-name>/someplugin:release</command-name>")]
+    att, _ = _attribute(tmp_path, fake_repo, lines, extra=[twin])
+    agg = _agg(att, twin.id, "invoked")
+    assert agg is not None and agg.confidence == "exact"
+    assert _agg(att, "command:release", "invoked") is None
+
+
+def test_plugin_qualified_command_unknown_plugin_credits_all_twins(tmp_path, fake_repo):
+    """the plugin half matches no provenance → every same-named command is credited,
+    heuristically (ambiguity is itself a downgrade)."""
+    cwd = str(fake_repo)
+    twin = _plugin_twin(fake_repo, "release", "someplugin")
+    lines = [user_text(0, cwd, "<command-name>/otherplugin:release</command-name>")]
+    att, _ = _attribute(tmp_path, fake_repo, lines, extra=[twin])
+    assert _agg(att, "command:release", "invoked").confidence == "heuristic"
+    assert _agg(att, twin.id, "invoked").confidence == "heuristic"
+
+
+def test_unknown_qualified_command_is_ignored(tmp_path, fake_repo):
+    cwd = str(fake_repo)
+    lines = [user_text(0, cwd, "<command-name>/someplugin:nope</command-name>")]
+    att, _ = _attribute(tmp_path, fake_repo, lines)
+    assert not any(cid.startswith("command:") and state == "invoked"
+                   for cid, state in att.usages)
+
+
+def test_stop_hook_summary_narrows_same_event_hooks_by_command(tmp_path, fake_repo):
+    """two hooks on one event: a stop_hook_summary that carries the command credits only
+    the hook whose configured command matches (still heuristic); without a command every
+    same-event hook is credited."""
+    from context_render.inventory.scanner import Component
+    from tests.conftest import _line
+
+    cwd = str(fake_repo)
+    a = Component(id="hook:Stop-all-aaaa", type="hook", name="Stop-all-aaaa",
+                  context="static", provenance="local",
+                  source=".claude/settings.json#hooks.Stop",
+                  states=["registered", "invoked"], hook_event="Stop",
+                  hook_commands=["lint.sh"])
+    b = replace(a, id="hook:Stop-all-bbbb", name="Stop-all-bbbb", hook_commands=["notify.sh"])
+    narrowed = [_line(0, "system", cwd, subtype="stop_hook_summary", hookCount=1,
+                      hookInfos=[{"command": "notify.sh --quiet"}])]
+    att, _ = _attribute(tmp_path, fake_repo, narrowed, extra=[a, b])
+    assert _agg(att, a.id, "invoked") is None
+    assert _agg(att, b.id, "invoked").confidence == "heuristic"
+
+    bare = [_line(0, "system", cwd, subtype="stop_hook_summary", hookCount=1, hookInfos=[{}])]
+    att, _ = _attribute(tmp_path, fake_repo, bare, extra=[a, b])
+    assert _agg(att, a.id, "invoked").count == 1
+    assert _agg(att, b.id, "invoked").count == 1
+
+
+def test_quoted_command_marker_is_not_an_invocation(tmp_path, fake_repo):
+    """Regression: the marker is exact only when it IS the message (anchored at the
+    start, the observed transcript shape) — a user pasting a transcript line that merely
+    contains one (dogfooding this very tool) must not be credited as an invocation."""
+    cwd = str(fake_repo)
+    lines = [user_text(
+        0, cwd,
+        "why does the timeline show <command-name>/release</command-name> twice?")]
+    att, _ = _attribute(tmp_path, fake_repo, lines)
+    assert _agg(att, "command:release", "invoked") is None
+
+
 def _read_skill_md_lines(fake_repo):
     cwd = str(fake_repo)
     skill_md = f"{fake_repo}/.claude/skills/db-migrate/SKILL.md"
@@ -139,7 +231,7 @@ def test_read_skill_md_ambiguous_twin_credits_both(tmp_path, fake_repo):
 
 def test_namespaced_command_invokes_only_its_namespace(tmp_path, fake_repo):
     """Regression: same-leaf commands in different namespaces were both keyed on the stem,
-    so invoking one credited the other too — hiding it from the deadweight list."""
+    so invoking one credited the other too — hiding it from the unused list."""
     cmds = fake_repo / ".claude" / "commands"
     (cmds / "frontend").mkdir()
     (cmds / "backend").mkdir()
@@ -216,7 +308,7 @@ def test_same_named_skills_do_not_collapse(tmp_path, fake_repo):
 
 def test_ambiguous_skill_name_credits_every_candidate_heuristically(tmp_path, fake_repo):
     """A bare name cannot say which same-named skill ran: credit both, and say it is a guess —
-    better than crediting one arbitrarily and reporting the other as permanent deadweight."""
+    better than crediting one arbitrarily and reporting the other as permanently unused."""
     twin = _plugin_twin(fake_repo, "db-migrate", "someplugin")
     cwd = str(fake_repo)
     lines = [
@@ -278,7 +370,7 @@ def test_bash_read_nonexistent_file_not_recorded(tmp_path, fake_repo):
 
 
 def test_agent_tool_marks_subagent_invoked(tmp_path, fake_repo):
-    """SPIKES.md W2 #13: the dispatch tool is named Agent in current transcripts (Task in
+    """The dispatch tool is named Agent in current transcripts (Task in
     older ones); both must mark the subagent invoked."""
     cwd = str(fake_repo)
     lines = [

@@ -1,11 +1,14 @@
-"""transcript file discovery and session→repo attribution (A5.1; spike #2: cwd is authoritative)."""
+"""transcript file discovery and session→repo attribution (cwd is authoritative)."""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+_MUNGE_RE = re.compile(r"[^A-Za-z0-9]")
 
 
 @dataclass
@@ -14,25 +17,23 @@ class SessionFile:
     session_id: str  # filename UUID
     mtime: float  # max over the main file and its sidechain files (freshness of the whole unit)
     size: int  # sum over the same set — a grown subagent file alone re-triggers ingest
-    # subagent transcripts under <proj>/<session-id>/subagents/ (SPIKES.md W2)
+    # subagent transcripts under <proj>/<session-id>/subagents/
     sidechain_paths: list[Path] = field(default_factory=list)
 
 
 def _munge(path: Path) -> str:
     """Claude Code project directory name: non-alphanumeric path characters replaced with -."""
-    import re
-
-    return re.sub(r"[^A-Za-z0-9]", "-", str(path))
+    return _MUNGE_RE.sub("-", str(path))
 
 
 def _peek_cwd(path: Path, max_lines: int = 50) -> str | None:
     """Read the first few lines to get cwd (use if present)."""
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
-            for i, line in enumerate(fh):
+            for i, raw in enumerate(fh):
                 if i >= max_lines:
                     break
-                line = line.strip()
+                line = raw.strip()
                 if not line:
                     continue
                 try:

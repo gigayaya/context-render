@@ -1,6 +1,6 @@
-"""ASCII visualization (§5.3): pure stdlib character drawing, zero extra dependencies (AC6 unaffected).
+"""ASCII visualization: pure stdlib character drawing, zero extra dependencies.
 
-CJK/full-width characters count as 2 columns via east_asian_width (§9 risk: CJK label alignment).
+CJK/full-width characters count as 2 columns via east_asian_width (CJK label alignment risk).
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ def daily_histogram(days: list[tuple[str, int]], height: int = 4,
     for row in range(height):  # top row first
         base = (height - 1 - row) * 8
         cells = []
-        for e, (_, c) in zip(eighths, shown):
+        for e, (_, c) in zip(eighths, shown, strict=True):
             lvl = min(8, max(0, e - base))
             if lvl:
                 cells.append(paint(FILL[lvl]))

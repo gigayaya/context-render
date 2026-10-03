@@ -1,10 +1,10 @@
-"""ANSI styling for the terminal renderer (pure stdlib; AC6 unaffected).
+"""ANSI styling for the terminal renderer (pure stdlib).
 
 Honors NO_COLOR (https://no-color.org) and disables itself when stdout is not
 a tty; CLICOLOR_FORCE=1 forces color (useful for piping into `less -R`).
 Colors MUST be applied *after* padding (charts.pad_to) so escape sequences
 never distort display-width alignment. The md renderer never passes a style,
-so markdown output stays byte-identical to the plain form (AC3/AC9).
+so markdown output stays byte-identical to the plain form.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ class Style:
         self.enabled = enabled
 
     @classmethod
-    def detect(cls) -> "Style":
+    def detect(cls) -> Style:
         if os.environ.get("NO_COLOR") is not None:
             return cls(False)
         if os.environ.get("CLICOLOR_FORCE", "0") not in ("", "0"):

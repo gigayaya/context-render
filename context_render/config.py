@@ -1,4 +1,4 @@
-"""`.context-render/config.yaml` loading and defaults (summary of the plan's §8 open list)."""
+"""`.context-render/config.yaml` loading and defaults."""
 
 from __future__ import annotations
 
@@ -42,9 +42,6 @@ CACHE_READ_MULT = 0.10
 class Config:
     low_use_max_count: int = 2
     billing: str = "subscription"  # api | subscription | auto
-    deadweight_min_sessions: int = 20
-    deadweight_min_window_days: int = 90
-    in_progress_minutes: int = 5
     timeline_term_max: int = 40
     graph: bool = True
     timeline: bool = True
@@ -54,7 +51,7 @@ class Config:
     def price_for(self, model: str | None) -> dict[str, float] | None:
         if not model:
             return None
-        merged = {**DEFAULT_PRICES, **{k: v for k, v in self.prices.items()}}
+        merged = {**DEFAULT_PRICES, **self.prices}
         # longest prefix wins
         best = None
         for prefix, p in merged.items():
@@ -69,9 +66,6 @@ def audit_dir(repo_root: Path) -> Path:
 
 _INT_KEYS = (
     "low_use_max_count",
-    "deadweight_min_sessions",
-    "deadweight_min_window_days",
-    "in_progress_minutes",
     "timeline_term_max",
     "context_window_tokens",
 )
@@ -111,7 +105,7 @@ def load_config(repo_root: Path) -> Config:
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except yaml.YAMLError as e:
-        raise PreconditionError(f"config.yaml invalid YAML: {e}")
+        raise PreconditionError(f"config.yaml invalid YAML: {e}") from e
     if not isinstance(data, dict):
         raise PreconditionError("config.yaml top level must be a mapping")
     cfg = Config()

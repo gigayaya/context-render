@@ -1,4 +1,4 @@
-"""Error and degradation matrix walkthrough (A11)."""
+"""Error and degradation matrix walkthrough."""
 
 import json
 

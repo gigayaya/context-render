@@ -1,6 +1,7 @@
-"""parser tests (AC5/AC7): golden event stream, unknown-type injection, ts out-of-order, compaction fixture."""
+"""parser tests: golden event stream, unknown-type injection, ts out-of-order, compaction fixture."""
 
 import json
+from datetime import UTC
 from pathlib import Path
 
 from context_render.parser import parse_file
@@ -25,20 +26,53 @@ def test_golden_event_stream(tmp_path, fake_repo, rich_session_lines):
     assert kinds.count("tool_use") == 10
     assert "summary" in kinds
     # tool_use and tool_result paired by id
-    tu = [e for e in ps.events if e.kind == "tool_use" and e.tool_name == "Skill"][0]
+    tu = next(e for e in ps.events if e.kind == "tool_use" and e.tool_name == "Skill")
     tr = [e for e in ps.events if e.kind == "tool_result" and e.tool_use_id == tu.tool_use_id]
     assert tr and not tr[0].is_error
 
 
 def test_event_ts_normalized_to_utc(tmp_path, fake_repo):
     """Non-UTC offsets are normalized at parse so DB started_at strings compare consistently."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     lines = [user_text(0, str(fake_repo), "hi", timestamp="2026-07-11T22:00:00.000+08:00")]
     ps = parse_file(_write(tmp_path, lines))
     ev = ps.events[0]
-    assert ev.ts == datetime(2026, 7, 11, 14, 0, tzinfo=timezone.utc)
+    assert ev.ts == datetime(2026, 7, 11, 14, 0, tzinfo=UTC)
     assert ev.ts.isoformat().endswith("+00:00")
+
+
+def test_index_tool_results_first_wins(tmp_path, fake_repo):
+    from context_render.parser.loader import index_tool_results
+    from tests.conftest import assistant, tool_result, tool_use
+
+    cwd = str(fake_repo)
+    ps = parse_file(_write(tmp_path, [
+        assistant(0, cwd, [tool_use("Read", {"file_path": "/x"}, "t1")]),
+        tool_result(1, cwd, "t1", "first"),
+        tool_result(2, cwd, "t1", "second"),
+        tool_result(3, cwd, "t2", "other"),
+    ]))
+    results = index_tool_results(ps.events)
+    assert results["t1"].text == "first" and results["t1"].idx == 1
+    assert results["t2"].text == "other"
+
+
+def test_cc_2_1_25x_bookkeeping_types_are_known_aux(tmp_path, fake_repo):
+    """Session-level bookkeeping lines observed in cc 2.1.251–2.1.260 (2026-09-05)
+    are auxiliary: kind=system, never degraded."""
+    cwd = str(fake_repo)
+    lines = [
+        user_text(0, cwd, "hi"),
+        _line(1, "atis-latch", cwd, atis=""),
+        _line(2, "bridge-session", cwd, bridgeSessionId="cse_x", lastSequenceNum=0),
+        _line(3, "cost-state", cwd, totalCostUSD=0.5, modelUsage={}),
+        _line(4, "file-history-delta", cwd, messageId="m", snapshotMessageId="s",
+              trackingPath="/x", backup={}),
+    ]
+    ps = parse_file(_write(tmp_path, lines))
+    assert ps.parse_status == "ok" and ps.unknown_type_counts == {}
+    assert [e.kind for e in ps.events] == ["user_msg", "system", "system", "system", "system"]
 
 
 def test_unknown_type_degrades_not_crash(tmp_path, fake_repo):
@@ -171,7 +205,7 @@ def test_subdir_project_dir_cwdless_accepted(tmp_path, fake_repo):
 
 
 def test_sidechain_files_merge_chronologically(tmp_path, fake_repo):
-    """subagent transcripts (SPIKES.md W2: separate files) merge into the parent event
+    """subagent transcripts (separate files on disk) merge into the parent event
     stream by timestamp, renumbered so the timeline's idx sort stays chronological."""
     from tests.conftest import assistant, tool_result, tool_use, write_sidechain
 
@@ -231,7 +265,8 @@ def test_discover_attaches_sidechains(fake_repo, fake_projects):
     import os
 
     from context_render.parser import discover_sessions
-    from tests.conftest import user_text as ut, write_sidechain
+    from tests.conftest import user_text as ut
+    from tests.conftest import write_sidechain
 
     proj_dir = next(d for d in fake_projects.iterdir() if d.is_dir())
     main = next(proj_dir.glob("*.jsonl"))

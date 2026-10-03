@@ -1,14 +1,16 @@
-"""discovery → parse → attribute → store pipeline (shared by sync and last)."""
+"""discovery → parse → attribute → store pipeline (shared by sync and sessions <id-prefix>)."""
 
 from __future__ import annotations
 
 import json
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .attributor import Attribution, attribute
+from .attributor.facts import FACTS_EXTRACTOR_VERSION, FactExtraction, extract_facts, fact_rows
+from .attributor.stale import STALE_EXTRACTOR_VERSION, StaleWindow, extract_stale
 from .config import Config, audit_dir
 from .cost import compute_session_cost
 from .errors import PreconditionError
@@ -16,7 +18,7 @@ from .inventory.scanner import Component, load_manifest
 from .parser import ParsedSession, discover_sessions, parse_file
 from .parser.discovery import SessionFile
 from .parser.versions import is_supported
-from .store import Store
+from .store import FACTS_CID, STALE_CID, Store
 from .store.db import dumps_evidence, now_iso
 
 GIT_COMMIT_CID = "_event:git_commit"
@@ -43,31 +45,61 @@ def parse_since(spec: str | None) -> datetime | None:
     if not spec:
         return None
     spec = spec.strip()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if spec.endswith("d") and spec[:-1].isdigit():
         return now - timedelta(days=int(spec[:-1]))
     if spec.endswith("w") and spec[:-1].isdigit():
         return now - timedelta(weeks=int(spec[:-1]))
     try:
         dt = datetime.fromisoformat(spec)
-    except ValueError:
-        raise PreconditionError(f"--since format not supported: {spec} (accepts 30d / 12w / 2026-06-01)")
+    except ValueError as e:
+        raise PreconditionError(
+            f"--since format not supported: {spec} (accepts 30d / 12w / 2026-06-01)") from e
     if dt.tzinfo is None:
         dt = dt.astimezone()  # attach the local timezone
-    return dt.astimezone(timezone.utc)
+    return dt.astimezone(UTC)
 
 
 def open_store(repo_root: Path) -> Store:
     return Store(audit_dir(repo_root) / "db.sqlite")
 
 
+def build_fact_rows(session_id: str, ext: FactExtraction) -> list[dict]:
+    return fact_rows(ext.facts, session_id)
+
+
+def build_stale_rows(session_id: str, windows: list[StaleWindow]) -> list[dict]:
+    return [
+        {
+            "session_id": session_id,
+            "window_side": int(w.window_side),
+            "window_agent": w.window_agent,
+            "path": w.path,
+            "read_idx": w.read_idx,
+            "mutate_idx": w.mutate_idx,
+            "mutate_tool": w.mutate_tool,
+            "close_idx": w.close_idx,
+            "outcome": w.outcome,
+            "read_tokens_est": w.read_tokens_est,
+            "read_partial": int(w.read_partial),
+            "confidence": w.confidence,
+        }
+        for w in windows
+    ]
+
+
 def build_rows(parsed: ParsedSession, att: Attribution, components: list[Component],
-               sf: SessionFile, repo_root: Path, config: Config) -> tuple[dict, list[dict]]:
+               sf: SessionFile, repo_root: Path, config: Config, *,
+               facts: FactExtraction | None = None,
+               stale: list[StaleWindow] | None = None,
+               ) -> tuple[dict, list[dict], list[dict], list[dict]]:
+    """facts / stale: results already extracted for this same (parsed, repo_root) pair —
+    the session report has them in hand; None extracts them here (the sync path)."""
     static_s = sum(c.static_tokens for c in components if not c.missing)
     cost = compute_session_cost(parsed.events, static_s, config)
     # no parseable event timestamp → fall back to file mtime, otherwise the NULL
     # started_at row is invisible to every windowed query (started_at >= ?)
-    fallback_ts = datetime.fromtimestamp(sf.mtime, tz=timezone.utc)
+    fallback_ts = datetime.fromtimestamp(sf.mtime, tz=UTC)
     session_row = {
         "id": parsed.session_id,
         "project": repo_root.name,
@@ -92,7 +124,7 @@ def build_rows(parsed: ParsedSession, att: Attribution, components: list[Compone
                 "component_id": cid,
                 "state": state,
                 "count": agg.count,
-                # version not in the supported list → all attributions marked heuristic (A11)
+                # version not in the supported list → all attributions marked heuristic
                 "confidence": agg.confidence if version_ok else "heuristic",
                 "evidence": dumps_evidence(agg.evidence),
             }
@@ -131,7 +163,46 @@ def build_rows(parsed: ParsedSession, att: Attribution, components: list[Compone
             ),
         }
     )
-    return session_row, usage_rows
+    # self-derivation facts: extracted at ingest because
+    # transcripts expire; the marker row makes "extracted, zero facts" distinguishable
+    # from "never extracted" (facts coverage in the report SELF-DERIVATION block)
+    ext = facts if facts is not None else extract_facts(parsed, repo_root)
+    frows = build_fact_rows(parsed.session_id, ext)
+    usage_rows.append(
+        {
+            "session_id": parsed.session_id,
+            "component_id": FACTS_CID,
+            "state": "invoked",
+            "count": len(frows),
+            "confidence": "heuristic",
+            "evidence": json.dumps(
+                {"facts": len(frows),
+                 "tool_output_tokens_est": ext.tool_output_tokens_est,
+                 "extractor": FACTS_EXTRACTOR_VERSION},
+                ensure_ascii=False,
+            ),
+        }
+    )
+    # stale gauge: extracted at ingest for the same reason as facts (transcripts
+    # expire); the marker makes "extracted, zero windows" distinguishable from
+    # "never extracted"
+    stale_rows = build_stale_rows(
+        parsed.session_id, stale if stale is not None else extract_stale(parsed, repo_root))
+    usage_rows.append(
+        {
+            "session_id": parsed.session_id,
+            "component_id": STALE_CID,
+            "state": "invoked",
+            "count": len(stale_rows),
+            "confidence": "heuristic",
+            "evidence": json.dumps(
+                {"stale_windows": len(stale_rows),
+                 "extractor": STALE_EXTRACTOR_VERSION},
+                ensure_ascii=False,
+            ),
+        }
+    )
+    return session_row, usage_rows, frows, stale_rows
 
 
 def scan_repo(repo_root: Path, config: Config, since: str | None = None,
@@ -150,10 +221,12 @@ def scan_repo(repo_root: Path, config: Config, since: str | None = None,
                 "check the Claude Code project path"
             )
         for sf in sessions:
-            if since_dt and datetime.fromtimestamp(sf.mtime, tz=timezone.utc) < since_dt:
+            if since_dt and datetime.fromtimestamp(sf.mtime, tz=UTC) < since_dt:
                 summary.skipped += 1
                 continue
-            if not force and not store.needs_update(sf.session_id, sf.mtime, sf.size):
+            if not force and not store.needs_update(
+                    sf.session_id, sf.mtime, sf.size, FACTS_EXTRACTOR_VERSION,
+                    STALE_EXTRACTOR_VERSION):
                 summary.skipped += 1
                 continue
             existed = store.has_session(sf.session_id)
@@ -166,10 +239,11 @@ def scan_repo(repo_root: Path, config: Config, since: str | None = None,
                         file=sys.stderr,
                     )
                 att = attribute(parsed, components, repo_root)
-                session_row, usage_rows = build_rows(parsed, att, components, sf, repo_root, config)
-                store.replace_session(session_row, usage_rows)
-            except Exception as e:
-                # one bad session degrades, it must not abort the whole scan (AC5);
+                session_row, usage_rows, fact_rows, stale_rows = build_rows(
+                    parsed, att, components, sf, repo_root, config)
+                store.replace_session(session_row, usage_rows, fact_rows, stale_rows)
+            except Exception as e:  # noqa: BLE001 - one bad session must not abort the scan
+                # one bad session degrades, it must not abort the whole scan;
                 # writes are per-session and transactional, so nothing partial lands
                 summary.failed += 1
                 print(

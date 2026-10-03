@@ -5,8 +5,9 @@ User-facing docs stating behavioral contracts (confidence marks, known false neg
 | name | topic | when to load |
 |---|---|---|
 | `three-state-model.md` | R/L/I semantics — the conceptual core | Changing state semantics or applicability |
-| `reports.md` | How to read the session report, timeline, and context-window map | Changing report output |
+| `reports.md` | How to read the session report, timeline, context-window map, and the map report | Changing report output |
 | `configuration.md` | `.context-render/` layout, config keys, DB backup guidance | Changing config or directory layout |
 | `limitations.md` | Numbered list of known limits | Changing attributor/parser behavior (update the matching numbered item); before recommending any deletion |
-| `development.md` | Dev setup commands; spike decisions live in `../SPIKES.md` | Changing the build/test workflow |
+| `development.md` | Dev setup commands | Changing the build/test workflow |
+| `map-authoring.md` | `ctxr map` / `map init`: study-guideline mapping, the authoring loop, honest-reading notes | Changing `mapdev/` behavior or the map commands |
 | `images/` | Screenshots used by the docs | Updating visuals after output changes |
