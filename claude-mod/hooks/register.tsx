@@ -86,14 +86,11 @@ export const register: Register = (on, options) => {
     const snap = await read($, snapshot)
     const err = await read($, error)
     if ((!snap || snap.map.length === 0) && !err) return next(e)
-    const hover = e.surface === 'terminal' && e.viewport?.isFullscreen === true
     return bandTree($.ui.resolve(e), {
       snapshot: snap,
       error: err,
       isRefreshing: await read($, isRefreshing),
-      maxRows: e.props.maxRows,
       bodyColumns: e.props.bodyColumns,
-      hover,
     })
   })
 

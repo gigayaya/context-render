@@ -1,18 +1,17 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { Snapshot, TimelineRow } from '../types'
+import type { Seg, Snapshot, TimelineRow } from '../types'
 import {
-  eventLine,
   hhmmss,
   innerWidth,
   liveArgv,
   parseRun,
-  planBand,
-  recentEvents,
   rowTag,
   shortTokens,
   spawnFailed,
   timelineLine,
+  withoutLabelLanes,
+  withoutOccupancy,
 } from '../hooks/core'
 
 const row = (no: number, over: Partial<TimelineRow>): TimelineRow => ({
@@ -78,17 +77,7 @@ describe('parseRun', () => {
   })
 })
 
-describe('event lines', () => {
-  test('recentEvents keeps the last main-window loads and actions', () => {
-    expect(recentEvents(snap().timeline).map(r => r.no)).toEqual([2, 3, 4])
-    expect(recentEvents(snap().timeline, 1).map(r => r.no)).toEqual([4])
-  })
-  test('eventLine', () => {
-    const [l, r, a] = recentEvents(snap().timeline)
-    expect(eventLine(l!)).toBe('#2 ▼ L claude-md:root  exact  739 tok')
-    expect(eventLine(r!)).toBe('#3 ▼ read Read a.md  heuristic  1.2k tok')
-    expect(eventLine(a!)).toBe('#4 ▲ act Bash pytest  exact')
-  })
+describe('timeline lines', () => {
   test('rowTag covers non-event rows', () => {
     expect(rowTag(row(1, { kind: 'session_start' }))).toBe('start')
     expect(rowTag(row(1, { kind: 'compaction' }))).toBe('⟐')
@@ -108,15 +97,31 @@ describe('event lines', () => {
   })
 })
 
-describe('planBand degrades by maxRows', () => {
-  test('everything fits', () => {
-    const p = planBand(snap(), 20, false)
-    expect([p.map.length, p.axis !== null, p.recent.length]).toEqual([10, true, 3])
+describe('withoutOccupancy', () => {
+  test('leaves out the occupancy bar (window row and its borders)', () => {
+    const seg = (t: string, role: Seg['role'] = null): Seg => ({ t, role, no: null })
+    const box = [seg('          '), seg('└──┘', 'dim')]
+    const map = [
+      [seg('  '), seg('context window map', 'bold')],
+      box,
+      [seg('          '), seg('┌──┐', 'dim')],
+      [seg('  window  '), seg('│', 'dim'), seg('▂', 'occupancy'), seg('│', 'dim')],
+      [seg('          '), seg('└──┘', 'dim')],
+    ]
+    expect(withoutOccupancy(map)).toEqual(map.slice(0, 2))
+    expect(withoutOccupancy(map.slice(0, 2))).toEqual(map.slice(0, 2))
   })
-  test('drops recent lines first, then the axis', () => {
-    expect(planBand(snap(), 11, false).recent).toEqual([])
-    expect(planBand(snap(), 11, false).axis).not.toBeNull()
-    expect(planBand(snap(), 10, false).axis).toBeNull()
-    expect(planBand(snap(), 11, true).axis).toBeNull() // the warnings line takes a row
+})
+
+describe('withoutLabelLanes', () => {
+  const seg = (t: string, role: Seg['role'] = null, no: number | null = null): Seg => ({ t, role, no })
+  const lane = (...nos: number[]) => [seg('           '), ...nos.map(n => seg(String(n), 'load', n))]
+  const legend = [seg('  '), seg('context window map', 'bold')]
+  const loads = [seg('  loads    '), seg('▼ ▼', 'load')]
+  const box = [seg('          '), seg('│▅ █│', 'dim')]
+  const actions = [seg('  actions  '), seg('▲ ▲', 'action')]
+  test('drops every row that carries timeline numbers', () => {
+    const map = [legend, lane(10), lane(2, 7), loads, box, actions, lane(4, 8), lane(5)]
+    expect(withoutLabelLanes(map)).toEqual([legend, loads, box, actions])
   })
 })
