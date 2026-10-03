@@ -1,0 +1,16 @@
+{
+  "name": "context-render",
+  "owner": {
+    "name": "gigayaya"
+  },
+  "metadata": {
+    "description": "Claude Code plugins for context-render"
+  },
+  "plugins": [
+    {
+      "name": "ctxr-live",
+      "source": "./claude-mod",
+      "description": "Live context-window map from context-render above the prompt"
+    }
+  ]
+}

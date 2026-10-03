@@ -69,7 +69,16 @@ See [docs/reports.md](docs/reports.md) for how to read each view in detail.
 - **Narrow terminals** (under 64 columns) get a one-line pointer to `/ctx` in place of the map.
 - **No `ctxr init` needed**: in a repo without a manifest, `ctxr live` scans the scaffolds in memory (the same components a fresh `init` would write) and the band and pane add a dim line saying so. Archiving still needs `ctxr init` (then `ctxr sync`, or the SessionEnd hook from `init --hook`); until then `sessions` / `report` have nothing for this repo.
 
-Load it for a session:
+Install it from this repo's plugin marketplace (no clone needed), inside Claude Code:
+
+```
+/plugin marketplace add gigayaya/context-render
+/plugin install ctxr-live@context-render
+```
+
+or from a shell: `claude plugin marketplace add gigayaya/context-render && claude plugin install ctxr-live@context-render`. Pull later versions with `/plugin marketplace update context-render`. The mod still needs the `ctxr` command itself (see [Install](#install)).
+
+From a clone, load it for one session instead:
 
 ```bash
 claude --plugin-dir /path/to/context-render/claude-mod
