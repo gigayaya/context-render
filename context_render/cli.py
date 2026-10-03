@@ -8,6 +8,7 @@ zero API calls.
 
 from __future__ import annotations
 
+import json
 import shutil
 from collections import Counter
 from pathlib import Path
@@ -37,6 +38,7 @@ from .pipeline import (
 from .report.aggregate import aggregate_session, aggregate_window
 from .report.ansi import Style
 from .report.charts import hbar_chart, pad_to, truncate_display
+from .report.live import live_snapshot
 from .report.render_md import render_md, write_md
 from .report.render_term import render_term
 from .report.selfderive import aggregate_analyze, emit_prompt_text, select_row
@@ -195,6 +197,20 @@ def sync(
     _guard(run)
 
 
+def _match_session(sessions: list, prefix: str):
+    """The one session whose id starts with prefix."""
+    matches = [s for s in sessions if s.session_id.startswith(prefix)]
+    if not matches:
+        raise PreconditionError(
+            f"No session found with id prefix {prefix!r}; "
+            "use ctxr sessions to list them"
+        )
+    if len(matches) > 1:
+        ids = ", ".join(s.session_id[:12] for s in matches)
+        raise PreconditionError(f"prefix {prefix!r} matches multiple: {ids}; lengthen the prefix")
+    return matches[0]
+
+
 def _session_report(session: str, md: bool, evidence: bool,
                     no_timeline: bool, no_graph: bool, full: bool = False) -> None:
     repo_root = find_repo_root()
@@ -203,16 +219,7 @@ def _session_report(session: str, md: bool, evidence: bool,
     sessions = discover_sessions(repo_root)
     if not sessions:
         raise PreconditionError("No transcript found for this repo; check the Claude Code project path")
-    matches = [s for s in sessions if s.session_id.startswith(session)]
-    if not matches:
-        raise PreconditionError(
-            f"No session found with id prefix {session!r}; "
-            "use ctxr sessions to list them"
-        )
-    if len(matches) > 1:
-        ids = ", ".join(s.session_id[:12] for s in matches)
-        raise PreconditionError(f"prefix {session!r} matches multiple: {ids}; lengthen the prefix")
-    target = matches[0]
+    target = _match_session(sessions, session)
     parsed = parse_file(target.path, target.sidechain_paths)
     att = attribute(parsed, components, repo_root)
     facts = extract_facts(parsed, repo_root)
@@ -289,6 +296,10 @@ Command overview
               and a SELF-DERIVATION block (top info-needs the agent answered itself)
               --evidence attach raw event evidence; --md write to file; --full untruncated
               terminal output (keeps color); --no-timeline/--no-graph
+
+  live <id> --json
+              read-only JSON snapshot for the ctxr-live mod (in-progress ok; never writes
+              the DB); --width <20-200> map bar width
 
   report      cross-session aggregate: invocation count / last used / status per component
               (active / low-use / unused / MISS), daily-activity histogram, cost estimate,
@@ -566,6 +577,42 @@ def sessions(
             )
 
     _guard(run)
+
+
+def _live(prefix: str, width: int) -> None:
+    repo_root = find_repo_root()
+    config = load_config(repo_root)
+    components = load_manifest(repo_root)
+    sessions = discover_sessions(repo_root)
+    if not sessions:
+        raise PreconditionError("No transcript found for this repo; check the Claude Code project path")
+    target = _match_session(sessions, prefix)
+    parsed = parse_file(target.path, target.sidechain_paths)
+    att = attribute(parsed, components, repo_root)
+    facts = extract_facts(parsed, repo_root)
+    stale = extract_stale(parsed, repo_root)
+    # read-only by contract: no open_store — db.sqlite is an archive and an in-progress
+    # session would otherwise be re-ingested on every refresh (SessionEnd sync archives it)
+    agg = aggregate_session(parsed, att, components, config,
+                            facts=facts.facts, facts_tool_output=facts.tool_output_tokens_est,
+                            stale=stale)
+    snap = live_snapshot(agg, width, config.context_window_tokens)
+    typer.echo(json.dumps(snap, ensure_ascii=False))
+
+
+@app.command()
+def live(
+    session: str = typer.Argument(..., help="Session id prefix (in-progress sessions allowed)"),
+    as_json: bool = typer.Option(False, "--json", help="Emit the snapshot as JSON (required)"),
+    width: int = typer.Option(60, "--width", min=20, max=200,
+                              help="Map bar interior width in columns"),
+):
+    """Read-only JSON snapshot of one session for the ctxr-live mod (never writes the DB)."""
+    if not as_json:
+        typer.echo("Error: live is JSON-only; pass --json (human view: ctxr sessions <id>)",
+                   err=True)
+        raise typer.Exit(2)
+    _guard(lambda: _live(session, width))
 
 
 @app.command()

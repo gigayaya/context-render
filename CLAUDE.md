@@ -27,6 +27,7 @@ Data flow: `cli.py` (typer) → `pipeline.py` (scan orchestration) → subpackag
 - `guidance/` — static guidance-graph primitives (reference extraction + closure + symbols) consumed by `mapdev/`
 - `mapdev/` — `ctxr map` (merged routing-map report: carriers, structure, dead routes, coverage) and `map init`
 - `cost.py` — token/cost estimates from `message.usage` (built-in price table, config-overridable)
+- `claude-mod/` — `ctxr-live` Claude Code plugin (TS): draws `ctxr live --json` above the prompt; presentation only
 
 Every attribution carries a confidence: **exact** (observed marker in the transcript) or **heuristic** (best-effort inference). Keep the distinction — never promote a heuristic to exact without transcript evidence.
 

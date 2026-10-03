@@ -5,7 +5,7 @@ Top-level package — `cli.py` → `pipeline.py` → subpackages (each with its 
 | name | topic | when to load |
 |---|---|---|
 | `__init__.py` | Package version (`__version__`) | Bumping the release version |
-| `cli.py` | typer entry point, argument parsing/assembly only; exit codes 0/2/3; reports→stdout, diagnostics→stderr | Adding or changing a CLI command/option |
+| `cli.py` | typer entry point, argument parsing/assembly only; exit codes 0/2/3; reports→stdout, diagnostics→stderr; `live` is read-only JSON for the ctxr-live mod (no store, in-progress sessions allowed) | Adding or changing a CLI command/option |
 | `pipeline.py` | discover → parse → attribute → store orchestration shared by `sync` and `sessions <id-prefix>`; `--since` parsing | Changing the scan/ingest flow or session filtering |
 | `config.py` | `.context-render/config.yaml` loading + built-in model price table (longest-prefix match on `message.model`) | Adding config keys or updating model prices |
 | `cost.py` | Cost engine: measured usage first; static apportioning is approximate and must stay marked "approx." | Changing cost/token math |

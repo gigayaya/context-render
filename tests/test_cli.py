@@ -237,7 +237,7 @@ def test_clear(fake_repo, fake_projects, monkeypatch):
 def test_help_command():
     r = runner.invoke(app, ["help"])
     assert r.exit_code == 0
-    for cmd in ("init", "sync", "sessions", "report", "map", "clear",
+    for cmd in ("init", "sync", "sessions", "live", "report", "map", "clear",
                 "remove-hook", "help"):
         assert cmd in r.output
     assert "Three states" in r.output

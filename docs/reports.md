@@ -42,6 +42,16 @@ Before the timeline, the session report has a **context window visualization**: 
 
 Below it, a second `window` bar shows **occupancy** (green): prompt-token usage per turn against the model window (denominator `context_window_tokens`, default 200k; a peak above it is proof of a bigger window and snaps the denominator to the next known tier, i.e. 1M — for 1M-window sessions that never cross 200k, set `context_window_tokens: 1000000` in config), linear scale, sharing the event bar's columns — so a compaction dip lines up vertically with its `⟐`. It only appears when the transcript carries usage data; `--no-graph` turns the map off.
 
+Labels are row numbers of the full timeline listing, subagent (sidechain) rows included — the map skips drawing sidechain events but never renumbers.
+
+## Live map above the prompt (ctxr-live mod)
+
+`claude-mod/` is a Claude Code plugin that keeps this session's context window map above the prompt, refreshed after every tool call (debounced; one `ctxr live` process at a time). Below the map: the last three loads/actions (`#row ▼/▲ tag component confidence tokens`, heuristic rows dim). `/ctx` opens the full timeline in a pane; in the fullscreen terminal, hovering a map label shows that row's details.
+
+Load it for a session: `claude --plugin-dir /path/to/context-render/claude-mod`. If `ctxr` is not on PATH (or the editable install is hidden by the macOS chflag issue), set the plugin's `command` option in `/config`, e.g. `env PYTHONPATH=/path/to/context-render /path/to/context-render/.venv/bin/python -m context_render.cli`.
+
+`ctxr live <id> --json` is read-only: it never writes `db.sqlite`; the SessionEnd hook still archives the session. Errors show as one dim line; a failed refresh keeps the last map marked `⚠ stale`. Terminals narrower than 64 columns get a one-line pointer to `/ctx` instead of the map.
+
 ## Subagents
 
 Subagent transcripts (stored by Claude Code as separate files under `<session-id>/subagents/`) are merged into the parent session chronologically. What a subagent loaded or invoked counts toward the session's component states, and its evidence and timeline rows are tagged `[subagent:<type>]`; its token usage counts toward the session total and cost.
