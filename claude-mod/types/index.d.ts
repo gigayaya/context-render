@@ -13,6 +13,7 @@ export type TimelineRow = {
   est_tokens: number | null
   ctx_tokens: number | null
   sidechain: boolean
+  tool?: string | null // action rows: the tool behind the action (Bash, Edit, ...)
 }
 
 export type Snapshot = {
@@ -22,6 +23,7 @@ export type Snapshot = {
   width: number
   map: Seg[][]
   axis: Seg[] | null
+  last: { load: number | null; action: number | null } // timeline `no` behind each arrow row's rightmost mark
   timeline: TimelineRow[]
   occupancy: { current: number | null; peak: number | null; window: number }
   warnings: string[]

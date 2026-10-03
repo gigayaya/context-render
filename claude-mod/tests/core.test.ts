@@ -2,6 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { Seg, Snapshot, TimelineRow } from '../types'
 import {
+  eventName,
   hhmmss,
   innerWidth,
   liveArgv,
@@ -10,6 +11,7 @@ import {
   shortTokens,
   spawnFailed,
   timelineLine,
+  withLastNames,
   withoutLabelLanes,
   withoutOccupancy,
 } from '../hooks/core'
@@ -20,9 +22,10 @@ const row = (no: number, over: Partial<TimelineRow>): TimelineRow => ({
 })
 
 const snap = (over: Partial<Snapshot> = {}): Snapshot => ({
-  schema_version: 2, session_id: 'sess-1', cc_version: '2.1.288', width: 56,
+  schema_version: 3, session_id: 'sess-1', cc_version: '2.1.288', width: 56,
   map: Array.from({ length: 10 }, () => [{ t: 'x', role: null, no: null }]),
   axis: [{ t: '14:00:00', role: 'dim', no: null }],
+  last: { load: 3, action: 4 },
   timeline: [
     row(1, { kind: 'session_start' }),
     row(2, { kind: 'claude_md', transition: 'loaded', component: 'claude-md:root', est_tokens: 739 }),
@@ -69,8 +72,8 @@ describe('parseRun', () => {
     expect(garbage.kind === 'error' && garbage.message).toBe('ctxr-live: unreadable ctxr output')
   })
   test('unknown schema version is refused', () => {
-    const out = parseRun(0, JSON.stringify(snap({ schema_version: 3 })), '')
-    expect(out.kind === 'error' && out.message).toMatch(/schema 3 not supported/)
+    const out = parseRun(0, JSON.stringify(snap({ schema_version: 4 })), '')
+    expect(out.kind === 'error' && out.message).toMatch(/schema 4 not supported/)
   })
   test('spawn failure names the command', () => {
     const out = spawnFailed('ctxr', new Error('ENOENT'))
@@ -124,5 +127,39 @@ describe('withoutLabelLanes', () => {
   test('drops every row that carries timeline numbers', () => {
     const map = [legend, lane(10), lane(2, 7), loads, box, actions, lane(4, 8), lane(5)]
     expect(withoutLabelLanes(map)).toEqual([legend, loads, box, actions])
+  })
+})
+
+describe('withLastNames', () => {
+  const seg = (t: string, role: Seg['role'] = null): Seg => ({ t, role, no: null })
+  const legend = [seg('  '), seg('context window map', 'bold')]
+  const loads = [seg('  loads    '), seg('▼ ▼', 'load')]
+  const box = [seg('          '), seg('│▅ █│', 'dim')]
+  const actions = [seg('  actions  '), seg('▲ ▲', 'action')]
+  test('names the event behind each arrow row\'s rightmost mark', () => {
+    expect(withLastNames([legend, loads, box, actions], snap())).toEqual([
+      legend,
+      [...loads, seg(' Read a.md ~', 'load')],
+      box,
+      [...actions, seg(' Bash pytest', 'action')],
+    ])
+  })
+  test('a side without a mark, or an unknown row, stays bare', () => {
+    const map = [legend, loads, box, actions]
+    expect(withLastNames(map, snap({ last: { load: null, action: 99 } }))).toEqual(map)
+  })
+})
+
+describe('eventName', () => {
+  test('component id, tool + target for actions, else the detail', () => {
+    expect(eventName(row(2, { kind: 'claude_md', transition: 'loaded', component: 'claude-md:root' })))
+      .toBe('claude-md:root')
+    expect(eventName(row(4, { kind: 'action', tool: 'Bash', detail: 'git status' }))).toBe('Bash git status')
+    expect(eventName(row(4, { kind: 'action', tool: 'Edit', detail: 'README.md' }))).toBe('Edit README.md')
+    expect(eventName(row(3, { kind: 'file_read', detail: 'Read a.md' }))).toBe('Read a.md')
+  })
+  test('heuristic rows carry the ~ mark', () => {
+    expect(eventName(row(5, { kind: 'hook', transition: 'invoked', component: 'hook:SessionStart', confidence: 'heuristic' })))
+      .toBe('hook:SessionStart ~')
   })
 })

@@ -153,24 +153,21 @@ def window_scale(samples: list[dict], window_tokens: int) -> int:
     return window_tokens
 
 
-def context_map_parts(timeline: list[dict], samples: list[dict], width: int = WIDTH,
-                      window_tokens: int = 200_000,
-                      layout: str = "stretch") -> tuple[list[Row], Row | None]:
-    """Map rows (legend → label lanes → event box → occupancy bar) and the time-axis row
-    (None without reliable timestamps). Empty timeline → ([], None)."""
+def _marks(timeline: list[dict], samples: list[dict], width: int, layout: str) -> dict | None:
+    """Column mapping + per-side marks shared by the map and `last_marks`; None when the
+    map is empty (no main-window rows, or no events to place)."""
     # the map draws the session's own window; sidechain rows belong to a subagent's window
     # (they stay in the timeline listing, tagged) — mirrors the context_samples exclusion
     # number against the FULL timeline first: the listing (render_timeline_lines) numbers
     # every row, sidechain ones included, and the labels must point at those rows
     numbered = [(no, e) for no, e in enumerate(timeline, 1) if not e.get("sidechain")]
-    timeline = [e for _, e in numbered]
-    if not timeline:
-        return [], None
+    if not numbered:
+        return None
     # one shared column mapping so the occupancy bar lines up with the event bar
-    refs = sorted({e["evidence_ref"] for e in timeline if e.get("evidence_ref") is not None}
+    refs = sorted({e["evidence_ref"] for _, e in numbered if e.get("evidence_ref") is not None}
                   | {s["idx"] for s in samples})
     if not refs:
-        return [], None
+        return None
     if layout == "scroll":
         # one column per rank from the left edge; the oldest ranks scroll out on the left
         offset = max(0, len(refs) - width)
@@ -181,7 +178,6 @@ def context_map_parts(timeline: list[dict], samples: list[dict], width: int = WI
         last_rank = max(1, len(refs) - 1)
         col = {idx: min(width - 1, rank * (width - 1) // last_rank)
                for rank, idx in enumerate(refs)}
-    left = "┆" if offset else "│"  # ┆: earlier events scrolled out
 
     loads: list[tuple[int, int]] = []  # (col, timeline row number)
     acts: list[tuple[int, int]] = []
@@ -206,6 +202,35 @@ def context_map_parts(timeline: list[dict], samples: list[dict], width: int = WI
             act_est[ref] = act_est.get(ref, 0) + est
             if b is not None:
                 acts.append((b, no))
+    return {"timeline": [e for _, e in numbered], "col": col, "offset": offset,
+            "loads": loads, "acts": acts, "load_est": load_est, "act_est": act_est,
+            "compactions": compactions}
+
+
+def last_marks(timeline: list[dict], samples: list[dict], width: int = WIDTH,
+               layout: str = "stretch") -> dict:
+    """Timeline row number behind the rightmost ▼ and ▲ mark (the newest row when several
+    share that column); None for a side with no mark on the bar."""
+    m = _marks(timeline, samples, width, layout)
+    if m is None:
+        return {"load": None, "action": None}
+    return {"load": max(m["loads"])[1] if m["loads"] else None,
+            "action": max(m["acts"])[1] if m["acts"] else None}
+
+
+def context_map_parts(timeline: list[dict], samples: list[dict], width: int = WIDTH,
+                      window_tokens: int = 200_000,
+                      layout: str = "stretch") -> tuple[list[Row], Row | None]:
+    """Map rows (legend → label lanes → event box → occupancy bar) and the time-axis row
+    (None without reliable timestamps). Empty timeline → ([], None)."""
+    m = _marks(timeline, samples, width, layout)
+    if m is None:
+        return [], None
+    timeline, col, offset = m["timeline"], m["col"], m["offset"]
+    loads, acts, compactions = m["loads"], m["acts"], m["compactions"]
+    load_est, act_est = m["load_est"], m["act_est"]
+    left = "┆" if offset else "│"  # ┆: earlier events scrolled out
+
     load_cells = _by_col(load_est, col)  # col → Σ est tokens landing there
     act_cells = _by_col(act_est, col)
 

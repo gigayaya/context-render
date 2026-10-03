@@ -1,6 +1,6 @@
 {
   "name": "ctxr-live",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Live context-window map from context-render above the prompt",
   "author": {
     "name": "gigayaya"

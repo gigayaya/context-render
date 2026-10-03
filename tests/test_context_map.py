@@ -11,6 +11,7 @@ from context_render.report.context_map import (
     context_map_lines,
     context_map_parts,
     context_map_rows,
+    last_marks,
     render_rows,
     window_scale,
 )
@@ -217,3 +218,35 @@ def test_stretch_stays_the_default():
         _actions(5), [], width=20, layout="stretch")
     rows, _ = context_map_parts(_actions(5), [], width=20)
     assert _arrow_cols(rows, "  actions")[-1] == 19  # stretched across the full width
+
+
+# --- last_marks (ctxr live names the event behind each arrow row's rightmost mark) ---
+
+def test_last_marks_point_at_the_rightmost_mark_per_side():
+    tl = [
+        _row("session_start", -1, "cc 2.1.207"),
+        _row("claude_md", 0, "root CLAUDE.md", transition="loaded", component="claude-md:root"),
+        _row("action", 1, "pytest", tool="Bash"),
+        _row("file_read", 2, "Read a.md"),
+        _row("action", 3, "a.md", tool="Edit"),
+    ]
+    assert last_marks(tl, [], width=20, layout="scroll") == {"load": 4, "action": 5}
+
+
+def test_last_marks_take_the_newest_row_sharing_the_column():
+    tl = [
+        _row("claude_md", 0, "root", transition="loaded", component="claude-md:root"),
+        _row("claude_md", 0, "global", transition="loaded", component="claude-md:global"),
+    ]
+    assert last_marks(tl, [], width=20, layout="scroll") == {"load": 2, "action": None}
+
+
+def test_last_marks_skip_sidechain_and_scrolled_out_rows():
+    sub = _row("file_read", 30, "[subagent:x] Read b.md", sidechain=True)
+    assert last_marks([*_actions(30), sub], [], width=20, layout="scroll")["load"] is None
+    early = [_row("file_read", -5, "Read a.md"), *_actions(30)]
+    assert last_marks(early, [], width=20, layout="scroll") == {"load": None, "action": 31}
+
+
+def test_last_marks_of_an_empty_map():
+    assert last_marks([], [], width=20) == {"load": None, "action": None}

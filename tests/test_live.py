@@ -31,7 +31,7 @@ def _transcript(fake_projects) -> Path:
 def test_live_snapshot_shape(tmp_path, fake_repo, rich_session_lines):
     agg = _session_agg(tmp_path, fake_repo, rich_session_lines)
     snap = live_snapshot(agg, width=40, window_tokens=200_000)
-    assert snap["schema_version"] == LIVE_SCHEMA_VERSION == 2
+    assert snap["schema_version"] == LIVE_SCHEMA_VERSION == 3
     assert snap["width"] == 40
     assert [e["no"] for e in snap["timeline"]] == list(range(1, len(snap["timeline"]) + 1))
     assert all(isinstance(e["sidechain"], bool) for e in snap["timeline"])
@@ -160,10 +160,13 @@ def test_live_imports_no_network_modules(fake_repo, fake_projects, monkeypatch):
 
 
 def test_live_snapshot_uses_scroll_layout(tmp_path, fake_repo, rich_session_lines):
-    from context_render.report.context_map import context_map_parts
+    from context_render.report.context_map import context_map_parts, last_marks
 
     agg = _session_agg(tmp_path, fake_repo, rich_session_lines)
     snap = live_snapshot(agg, width=40, window_tokens=200_000)
     rows, axis = context_map_parts(agg["timeline"], agg["context_samples"], width=40,
                                    window_tokens=200_000, layout="scroll")
     assert snap["map"] == rows and snap["axis"] == axis
+    assert snap["last"] == last_marks(agg["timeline"], agg["context_samples"], width=40,
+                                      layout="scroll")
+    assert snap["last"]["load"] is not None and snap["last"]["action"] is not None

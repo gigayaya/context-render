@@ -4,9 +4,10 @@ import type { On } from 'claude-code'
 import { memState, sessionStart } from './engine'
 
 const SNAP = {
-  schema_version: 2, session_id: 'sess-1', cc_version: '2.1.288', width: 56,
+  schema_version: 3, session_id: 'sess-1', cc_version: '2.1.288', width: 56,
   map: [[{ t: '  ', role: null, no: null }, { t: 'context window map', role: 'bold', no: null }]],
   axis: null,
+  last: { load: null, action: null },
   timeline: [{ no: 1, ts: null, kind: 'session_start', component: null, transition: null,
                detail: 'cc', confidence: 'exact', est_tokens: 0, ctx_tokens: null, sidechain: false }],
   occupancy: { current: null, peak: null, window: 200000 },

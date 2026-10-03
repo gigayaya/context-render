@@ -2,14 +2,15 @@
 
 Pure over the aggregate object (renderers never touch store/filesystem). The map ships
 as segments (context_map_parts, scroll layout) so the band draws the reports' geometry;
-timeline rows keep every aggregate field plus their listing number `no`.
+timeline rows keep every aggregate field plus their listing number `no`; `last` names the
+timeline row behind each arrow row's rightmost mark (the band writes its name there).
 """
 
 from __future__ import annotations
 
-from .context_map import context_map_parts, window_scale
+from .context_map import context_map_parts, last_marks, window_scale
 
-LIVE_SCHEMA_VERSION = 2
+LIVE_SCHEMA_VERSION = 3
 # `ctxr live` without a manifest scans in memory; nothing archives the session until init
 NO_MANIFEST_NOTICE = "not init'd: scaffolds scanned on the fly, session not archived — run ctxr init"
 
@@ -21,6 +22,7 @@ def live_snapshot(agg: dict, width: int, window_tokens: int,
     # scroll: marks stay put as the session grows (the band redraws on every refresh)
     rows, axis = context_map_parts(timeline, samples, width=width,
                                    window_tokens=window_tokens, layout="scroll")
+    last = last_marks(timeline, samples, width=width, layout="scroll")
     latest = max(samples, key=lambda s: s["idx"]) if samples else None
     session = agg.get("session") or {}
     return {
@@ -30,6 +32,7 @@ def live_snapshot(agg: dict, width: int, window_tokens: int,
         "width": width,
         "map": rows,
         "axis": axis,
+        "last": last,
         "timeline": [{**e, "no": no, "sidechain": bool(e.get("sidechain"))}
                      for no, e in enumerate(timeline, 1)],
         "occupancy": {

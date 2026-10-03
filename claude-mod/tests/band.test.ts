@@ -9,13 +9,14 @@ const ROW = (no: number, over: Record<string, unknown>) => ({
   confidence: 'exact', est_tokens: 0, ctx_tokens: null, sidechain: false, ...over,
 })
 const SNAP = {
-  schema_version: 2, session_id: 'sess-1', cc_version: '2.1.288', width: 56,
+  schema_version: 3, session_id: 'sess-1', cc_version: '2.1.288', width: 56,
   map: [
     [seg('  '), seg('context window map', 'bold')],
     [seg('           '), seg('2', 'load', 2)],
     [seg('  loads    '), seg('▼', 'load')],
   ],
   axis: [seg('          '), seg('14:00:00            14:09:00', 'dim')],
+  last: { load: 2, action: null } as { load: number | null; action: number | null },
   timeline: [
     ROW(1, { kind: 'session_start' }),
     ROW(2, { kind: 'claude_md', transition: 'loaded', component: 'claude-md:root', est_tokens: 739 }),
@@ -84,6 +85,25 @@ test('draws the arrow rows without their number lanes', async ($, on) => {
     expect(await ui.find({ type: 'Text', text: '▼' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '▲' })).toBeDefined()
     for (const no of ['1', '2', '3', '4']) expect(await ui.find({ type: 'Text', text: no })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('names the latest event after the last arrow of each row', async ($, on) => {
+  const named = {
+    ...SNAP,
+    map: [
+      [seg('  '), seg('context window map', 'bold')],
+      [seg('  loads    '), seg('▼ ▼', 'load')],
+      [seg('  actions  '), seg('▲', 'action')],
+    ],
+    last: { load: 2, action: 3 },
+  }
+  await withSnapshot($, on, () => ({ exitCode: 0, stdout: JSON.stringify(named), stderr: '' }))
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ plugin: 'ctxr-live', surface, ...BAND() })
+    expect(await ui.find({ type: 'Text', text: ' claude-md:root' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: ' Bash pytest ~' })).toBeDefined()
     await ui.unmount()
   }
 })

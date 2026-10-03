@@ -1,7 +1,7 @@
 import type { Elements, RenderSurface } from 'claude-code'
 
 import type { Role, Seg, Snapshot } from '../types'
-import { MIN_BODY, timelineLine, withoutLabelLanes, withoutOccupancy } from './core'
+import { MIN_BODY, timelineLine, withLastNames, withoutLabelLanes, withoutOccupancy } from './core'
 
 export type Kit = Pick<Elements[RenderSurface], 'Box' | 'Text'>
 
@@ -58,7 +58,7 @@ export function bandTree(kit: Kit, input: BandInput) {
     )
   }
   const status = `${input.isRefreshing ? ' ↻' : ''}${input.error ? ' ⚠ stale' : ''}`
-  const map = withoutLabelLanes(withoutOccupancy(s.map))
+  const map = withLastNames(withoutLabelLanes(withoutOccupancy(s.map)), s)
   return (
     <Box flexDirection="column">
       {map.map((segs, i) =>

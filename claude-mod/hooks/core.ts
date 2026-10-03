@@ -1,6 +1,6 @@
-import type { Seg, Snapshot, TimelineRow } from '../types'
+import type { Role, Seg, Snapshot, TimelineRow } from '../types'
 
-export const SCHEMA_VERSION = 2 // must match context_render/report/live.py LIVE_SCHEMA_VERSION
+export const SCHEMA_VERSION = 3 // must match context_render/report/live.py LIVE_SCHEMA_VERSION
 export const GUTTER = 10 // context_map.GUTTER
 export const RIGHT = 32 // widest right-hand note: " occupancy · peak 999.9k/1M tok"
 export const MIN_WIDTH = 20
@@ -113,4 +113,28 @@ export function withoutOccupancy(map: Seg[][]): Seg[][] {
 // label lanes are the rows carrying timeline numbers; the band draws the arrow rows without them
 export function withoutLabelLanes(map: Seg[][]): Seg[][] {
   return map.filter(segs => !segs.some(s => s.no !== null))
+}
+
+// the name the band writes after an arrow: component id, tool + target for actions, else detail
+export function eventName(row: TimelineRow): string {
+  const mark = row.confidence === 'heuristic' ? ' ~' : ''
+  if (row.component) return `${row.component}${mark}`
+  if (row.kind === 'action' && row.tool) return `${row.tool} ${row.detail}${mark}`
+  return `${row.detail}${mark}`
+}
+
+const ARROW_ROWS: Record<string, { side: 'load' | 'action'; role: Role }> = {
+  loads: { side: 'load', role: 'load' },
+  actions: { side: 'action', role: 'action' },
+}
+
+// each arrow row gets the name of the event behind its rightmost mark (snapshot `last`)
+export function withLastNames(map: Seg[][], s: Snapshot): Seg[][] {
+  const byNo = new Map(s.timeline.map(row => [row.no, row]))
+  return map.map(segs => {
+    const arrow = ARROW_ROWS[segs[0]?.t.trim() ?? '']
+    const no = arrow ? s.last?.[arrow.side] : null
+    const row = no == null ? undefined : byNo.get(no)
+    return row ? [...segs, { t: ` ${eventName(row)}`, role: arrow!.role, no: null }] : segs
+  })
 }

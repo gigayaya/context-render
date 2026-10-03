@@ -9,9 +9,10 @@ const ROW = (no: number, over: Record<string, unknown>) => ({
   confidence: 'exact', est_tokens: 0, ctx_tokens: null, sidechain: false, ...over,
 })
 const SNAP = {
-  schema_version: 2, session_id: 'sess-1', cc_version: '2.1.288', width: 56,
+  schema_version: 3, session_id: 'sess-1', cc_version: '2.1.288', width: 56,
   map: [[seg('  '), seg('context window map', 'bold')], [seg('           '), seg('2', 'load', 2)]],
   axis: null,
+  last: { load: null, action: null },
   timeline: [
     ROW(1, { kind: 'session_start', detail: 'cc 2.1.288' }),
     ROW(2, { kind: 'claude_md', transition: 'loaded', component: 'claude-md:root', detail: 'root CLAUDE.md', est_tokens: 739 }),
