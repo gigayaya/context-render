@@ -38,7 +38,7 @@ from .pipeline import (
 from .report.aggregate import aggregate_session, aggregate_window
 from .report.ansi import Style
 from .report.charts import hbar_chart, pad_to, truncate_display
-from .report.live import live_snapshot
+from .report.live import NO_MANIFEST_NOTICE, live_snapshot
 from .report.render_md import render_md, write_md
 from .report.render_term import render_term
 from .report.selfderive import aggregate_analyze, emit_prompt_text, select_row
@@ -582,7 +582,9 @@ def sessions(
 def _live(prefix: str, width: int) -> None:
     repo_root = find_repo_root()
     config = load_config(repo_root)
-    components = load_manifest(repo_root)
+    # no manifest yet: scan in memory (what a fresh init would write) — live never writes
+    has_manifest = manifest_path(repo_root).is_file()
+    components = load_manifest(repo_root) if has_manifest else scan_components(repo_root)
     sessions = discover_sessions(repo_root)
     if not sessions:
         raise PreconditionError("No transcript found for this repo; check the Claude Code project path")
@@ -596,7 +598,8 @@ def _live(prefix: str, width: int) -> None:
     agg = aggregate_session(parsed, att, components, config,
                             facts=facts.facts, facts_tool_output=facts.tool_output_tokens_est,
                             stale=stale)
-    snap = live_snapshot(agg, width, config.context_window_tokens)
+    snap = live_snapshot(agg, width, config.context_window_tokens,
+                         notice=None if has_manifest else NO_MANIFEST_NOTICE)
     typer.echo(json.dumps(snap, ensure_ascii=False))
 
 

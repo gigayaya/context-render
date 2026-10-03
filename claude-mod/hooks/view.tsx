@@ -35,6 +35,11 @@ export function segRow(kit: Kit, segs: Seg[], key: string) {
   )
 }
 
+// the snapshot's notice (e.g. not init'd), worded like the mod's other one-line messages
+function noticeLine(s: Snapshot | null): string | null {
+  return s?.notice ? `ctxr-live: ${s.notice}` : null
+}
+
 export function bandTree(kit: Kit, input: BandInput) {
   const { Box, Text } = kit
   const s = input.snapshot
@@ -48,7 +53,7 @@ export function bandTree(kit: Kit, input: BandInput) {
   if (!s || s.map.length === 0) {
     return (
       <Box>
-        <Text dimColor wrap="truncate-end">{input.error ?? ''}</Text>
+        <Text dimColor wrap="truncate-end">{input.error ?? noticeLine(s) ?? ''}</Text>
       </Box>
     )
   }
@@ -59,6 +64,7 @@ export function bandTree(kit: Kit, input: BandInput) {
       {map.map((segs, i) =>
         segRow(kit, i === 0 && status ? [...segs, { t: status, role: 'dim', no: null }] : segs, `m${i}`),
       )}
+      {s.notice && <Text key="notice" dimColor wrap="truncate-end">{noticeLine(s)}</Text>}
     </Box>
   )
 }
@@ -72,10 +78,11 @@ export function paneTree(kit: Kit, s: Snapshot | null, error: string | null, row
       </Box>
     )
   }
-  const room = Math.max(1, rows - (error ? 3 : 2))
+  const room = Math.max(1, rows - 2 - (error ? 1 : 0) - (s.notice ? 1 : 0))
   return (
     <Box flexDirection="column">
       {error && <Text key="err" dimColor wrap="truncate-end">{error} (showing the last snapshot)</Text>}
+      {s.notice && <Text key="notice" dimColor wrap="truncate-end">{noticeLine(s)}</Text>}
       {s.timeline.slice(-room).map(row => (
         <Text key={`t${row.no}`} dimColor={row.confidence === 'heuristic' || row.sidechain} wrap="truncate-end">
           {timelineLine(row)}

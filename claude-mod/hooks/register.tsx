@@ -85,7 +85,7 @@ export const register: Register = (on, options) => {
     }
     const snap = await read($, snapshot)
     const err = await read($, error)
-    if ((!snap || snap.map.length === 0) && !err) return next(e)
+    if ((!snap || (snap.map.length === 0 && !snap.notice)) && !err) return next(e)
     return bandTree($.ui.resolve(e), {
       snapshot: snap,
       error: err,

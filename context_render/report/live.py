@@ -9,10 +9,13 @@ from __future__ import annotations
 
 from .context_map import context_map_parts, window_scale
 
-LIVE_SCHEMA_VERSION = 1
+LIVE_SCHEMA_VERSION = 2
+# `ctxr live` without a manifest scans in memory; nothing archives the session until init
+NO_MANIFEST_NOTICE = "not init'd: scaffolds scanned on the fly, session not archived — run ctxr init"
 
 
-def live_snapshot(agg: dict, width: int, window_tokens: int) -> dict:
+def live_snapshot(agg: dict, width: int, window_tokens: int,
+                  notice: str | None = None) -> dict:
     timeline = agg.get("timeline") or []
     samples = agg.get("context_samples") or []
     rows, axis = context_map_parts(timeline, samples, width=width,
@@ -34,4 +37,5 @@ def live_snapshot(agg: dict, width: int, window_tokens: int) -> dict:
             "window": window_scale(samples, window_tokens),
         },
         "warnings": list(agg.get("warnings") or []),
+        "notice": notice,
     }

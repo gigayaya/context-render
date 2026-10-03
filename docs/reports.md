@@ -50,7 +50,7 @@ Labels are row numbers of the full timeline listing, subagent (sidechain) rows i
 
 Load it for a session: `claude --plugin-dir /path/to/context-render/claude-mod`. If `ctxr` is not on PATH (or the editable install is hidden by the macOS chflag issue), set the plugin's `command` option in `/config`, e.g. `env PYTHONPATH=/path/to/context-render /path/to/context-render/.venv/bin/python -m context_render.cli`.
 
-`ctxr live <id> --json` is read-only: it never writes `db.sqlite`; the SessionEnd hook still archives the session. Errors show as one dim line; a failed refresh keeps the last map marked `⚠ stale`. Terminals narrower than 64 columns get a one-line pointer to `/ctx` instead of the map.
+`ctxr live <id> --json` is read-only: it never writes `db.sqlite`; the SessionEnd hook (if `init --hook` installed it) still archives the session. Errors show as one dim line; a failed refresh keeps the last map marked `⚠ stale`. Terminals narrower than 64 columns get a one-line pointer to `/ctx` instead of the map. Without a manifest (no `ctxr init` yet), `ctxr live` scans the scaffolds in memory instead of failing, and the snapshot's `notice` adds one dim line to the band and the pane: the session won't be archived until you run `ctxr init`.
 
 ## Subagents
 
