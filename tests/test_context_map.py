@@ -157,3 +157,63 @@ def test_map_labels_use_full_timeline_numbers_with_sidechain():
     assert nos == [3]
     listing = render_timeline_lines(tl)
     assert listing[2].lstrip().startswith("3 ") and "a.md" in listing[2]
+
+
+# --- scroll layout (ctxr live): grows from the left, scrolls once it overflows ---
+
+def _actions(n: int, est=lambda i: 10) -> list[dict]:
+    return [{**_row("action", i, f"Edit f{i}", est_tokens=est(i)), "ts": TS.format(i)}
+            for i in range(n)]
+
+
+def _arrow_cols(rows, gutter_label: str) -> list[int]:
+    row = next(r for r in rows if r[0]["t"].startswith(gutter_label))
+    return [i for i, ch in enumerate(row[1]["t"]) if ch != " "]
+
+
+def _box_rows(rows) -> list:
+    return [r for r in rows if len(r) > 1 and r[1]["t"] in ("│", "┆")]
+
+
+def test_scroll_layout_grows_from_the_left():
+    rows, _ = context_map_parts(_actions(5), [], width=20, layout="scroll")
+    assert _arrow_cols(rows, "  actions") == [0, 1, 2, 3, 4]
+    rows, _ = context_map_parts(_actions(6), [], width=20, layout="scroll")
+    assert _arrow_cols(rows, "  actions") == [0, 1, 2, 3, 4, 5]  # earlier marks stay put
+    assert all(r[1]["t"] == "│" for r in _box_rows(rows))
+
+
+def test_scroll_layout_keeps_only_the_latest_events():
+    rows, _ = context_map_parts(_actions(30), [], width=20, layout="scroll")
+    assert _arrow_cols(rows, "  actions") == list(range(20))
+    nos = {s["no"] for row in rows for s in row if s["no"] is not None}
+    assert nos and min(nos) > 10  # rows 1..10 scrolled out on the left
+    assert all(r[1]["t"] == "┆" for r in _box_rows(rows))
+
+
+def test_scroll_layout_heights_use_the_whole_session_max():
+    # the huge first event scrolls out; the visible ones stay short instead of filling up
+    rows, _ = context_map_parts(_actions(30, est=lambda i: 100_000 if i == 0 else 10),
+                                [], width=20, layout="scroll")
+    act_row = _box_rows(rows)[1]
+    assert "█" not in "".join(s["t"] for s in act_row[2:-3])
+
+
+def test_scroll_layout_occupancy_carries_from_scrolled_out_sample():
+    rows, _ = context_map_parts(_actions(30), [{"idx": 0, "tokens": 100_000}],
+                                width=20, layout="scroll")
+    window = next(r for r in rows if r[0]["t"].startswith("  window"))
+    assert window[2]["t"] != " "  # first visible column already shows the occupancy
+
+
+def test_scroll_layout_axis_starts_at_first_visible_event(utc):
+    _, axis = context_map_parts(_actions(30), [], width=20, layout="scroll")
+    text = "".join(s["t"] for s in axis)
+    assert "14:10:00" in text and "14:00:00" not in text
+
+
+def test_stretch_stays_the_default():
+    assert context_map_parts(_actions(5), [], width=20) == context_map_parts(
+        _actions(5), [], width=20, layout="stretch")
+    rows, _ = context_map_parts(_actions(5), [], width=20)
+    assert _arrow_cols(rows, "  actions")[-1] == 19  # stretched across the full width

@@ -157,3 +157,13 @@ def test_live_imports_no_network_modules(fake_repo, fake_projects, monkeypatch):
     proc = subprocess.run([sys.executable, "-c", code], cwd=fake_repo, env=env,
                           capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
+
+
+def test_live_snapshot_uses_scroll_layout(tmp_path, fake_repo, rich_session_lines):
+    from context_render.report.context_map import context_map_parts
+
+    agg = _session_agg(tmp_path, fake_repo, rich_session_lines)
+    snap = live_snapshot(agg, width=40, window_tokens=200_000)
+    rows, axis = context_map_parts(agg["timeline"], agg["context_samples"], width=40,
+                                   window_tokens=200_000, layout="scroll")
+    assert snap["map"] == rows and snap["axis"] == axis

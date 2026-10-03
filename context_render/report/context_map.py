@@ -30,6 +30,13 @@ that caused them. x-position is by event *rank* among displayed events — raw f
 numbers would let timeline-invisible lines (e.g. sidechains) squeeze all activity into
 a corner.
 
+`layout` picks how ranks fill the width. "stretch" (reports, the default) spreads the
+displayed events over the whole bar. "scroll" (`ctxr live`) gives each rank one column
+from the left edge, so marks stay put while the session grows; past the width the oldest
+ranks scroll out on the left, the bars' left border turns to ┆, block heights keep the
+whole session's largest event as their scale, and occupancy carries in from the last
+scrolled-out sample.
+
 Two layers: `context_map_parts` builds rows of segments ({"t", "role", "no"}; role is a
 semantic name — load/action/compaction/occupancy/dim/bold — and label segments carry their
 timeline row number in `no`), `render_rows` paints them through Style. The ctxr-live mod
@@ -124,6 +131,19 @@ def _block_segs(cells: dict[int, int], compactions: set[int], max_est: int,
     return segs
 
 
+def _by_col(est: dict[int, int], col: dict[int, int]) -> dict[int, int]:
+    """Σ est tokens per bar column (evidence_ref → col); scrolled-out refs are skipped."""
+    cells: dict[int, int] = {}
+    for ref, e in est.items():
+        if ref in col:
+            cells[col[ref]] = cells.get(col[ref], 0) + e
+    return cells
+
+
+def _occupancy_level(tokens: int, scale: int) -> int:
+    return max(1, round(tokens / scale * (len(FILL) - 1)))
+
+
 def window_scale(samples: list[dict], window_tokens: int) -> int:
     """Occupancy denominator: the configured window, snapped up to a known tier (or the
     peak itself) when a sample proves a bigger window."""
@@ -134,7 +154,8 @@ def window_scale(samples: list[dict], window_tokens: int) -> int:
 
 
 def context_map_parts(timeline: list[dict], samples: list[dict], width: int = WIDTH,
-                      window_tokens: int = 200_000) -> tuple[list[Row], Row | None]:
+                      window_tokens: int = 200_000,
+                      layout: str = "stretch") -> tuple[list[Row], Row | None]:
     """Map rows (legend → label lanes → event box → occupancy bar) and the time-axis row
     (None without reliable timestamps). Empty timeline → ([], None)."""
     # the map draws the session's own window; sidechain rows belong to a subagent's window
@@ -150,34 +171,48 @@ def context_map_parts(timeline: list[dict], samples: list[dict], width: int = WI
                   | {s["idx"] for s in samples})
     if not refs:
         return [], None
-    # event rank → bar column (uniform spacing of displayed events)
-    last_rank = max(1, len(refs) - 1)
-    col = {idx: min(width - 1, rank * (width - 1) // last_rank)
-           for rank, idx in enumerate(refs)}
+    if layout == "scroll":
+        # one column per rank from the left edge; the oldest ranks scroll out on the left
+        offset = max(0, len(refs) - width)
+        col = {idx: rank - offset for rank, idx in enumerate(refs) if rank >= offset}
+    else:
+        # event rank → bar column (uniform spacing of displayed events)
+        offset = 0
+        last_rank = max(1, len(refs) - 1)
+        col = {idx: min(width - 1, rank * (width - 1) // last_rank)
+               for rank, idx in enumerate(refs)}
+    left = "┆" if offset else "│"  # ┆: earlier events scrolled out
 
     loads: list[tuple[int, int]] = []  # (col, timeline row number)
     acts: list[tuple[int, int]] = []
-    load_cells: dict[int, int] = {}  # col → Σ est tokens landing there
-    act_cells: dict[int, int] = {}
+    load_est: dict[int, int] = {}  # evidence_ref → Σ est tokens
+    act_est: dict[int, int] = {}
     compactions: set[int] = set()
     for no, e in numbered:
         ref = e.get("evidence_ref")
         if ref is None:
             continue
-        b = col[ref]
+        b = col.get(ref)  # None: scrolled out on the left
         kind = e.get("kind")
         est = e.get("est_tokens") or 0
         if kind == "compaction":
-            compactions.add(b)
+            if b is not None:
+                compactions.add(b)
         elif kind == "file_read" or e.get("transition") == "loaded":
-            loads.append((b, no))
-            load_cells[b] = load_cells.get(b, 0) + est
+            load_est[ref] = load_est.get(ref, 0) + est
+            if b is not None:
+                loads.append((b, no))
         elif kind == "action" or e.get("transition") == "invoked":
-            acts.append((b, no))
-            act_cells[b] = act_cells.get(b, 0) + est
+            act_est[ref] = act_est.get(ref, 0) + est
+            if b is not None:
+                acts.append((b, no))
+    load_cells = _by_col(load_est, col)  # col → Σ est tokens landing there
+    act_cells = _by_col(act_est, col)
 
-    # shared height scale so the two lanes stay comparable
-    max_est = max([*load_cells.values(), *act_cells.values()], default=0)
+    # shared height scale so the two lanes stay comparable; scrolled-out events still
+    # count, so the visible blocks don't grow when the session's largest one leaves
+    scrolled = [e for est in (load_est, act_est) for ref, e in est.items() if ref not in col]
+    max_est = max([*load_cells.values(), *act_cells.values(), *scrolled], default=0)
 
     # legend symbols carry the same colors they have in the chart
     head = [_seg("  "), _seg("context window map", "bold"), _seg(" (", "dim"),
@@ -191,10 +226,10 @@ def context_map_parts(timeline: list[dict], samples: list[dict], width: int = WI
     rows.append([_seg(f"{'  loads':<{GUTTER}} "),
                  _seg(_arrow_row({b for b, _ in loads}, "▼", width), "load")])
     rows.append([_seg(gut), _seg("┌" + "─" * width + "┐", "dim")])
-    rows.append([_seg(gut), _seg("│", "dim"),
+    rows.append([_seg(gut), _seg(left, "dim"),
                  *_block_segs(load_cells, compactions, max_est, "load", width),
                  _seg("│", "dim"), _seg(" "), _seg("▼", "load"), _seg(" injected", "dim")])
-    rows.append([_seg(gut), _seg("│", "dim"),
+    rows.append([_seg(gut), _seg(left, "dim"),
                  *_block_segs(act_cells, compactions, max_est, "action", width),
                  _seg("│", "dim"), _seg(" "), _seg("▲", "action"), _seg(" actions", "dim")])
     rows.append([_seg(gut), _seg("└" + "─" * width + "┘", "dim")])
@@ -209,23 +244,30 @@ def context_map_parts(timeline: list[dict], samples: list[dict], width: int = WI
         scale = window_scale(samples, window_tokens)
         occupancy: dict[int, int] = {}
         for s in samples:
-            b = col[s["idx"]]
-            occupancy[b] = max(occupancy.get(b, 0), s["tokens"])
+            b = col.get(s["idx"])
+            if b is not None:
+                occupancy[b] = max(occupancy.get(b, 0), s["tokens"])
         parts: Row = []
-        level = 0
+        # carried forward from the last scrolled-out sample (none in stretch layout)
+        before = max((s for s in samples if s["idx"] not in col),
+                     key=lambda s: s["idx"], default=None)
+        level = _occupancy_level(before["tokens"], scale) if before else 0
         for i in range(width):
             if i in occupancy:
-                level = max(1, round(occupancy[i] / scale * (len(FILL) - 1)))
+                level = _occupancy_level(occupancy[i], scale)
             parts.append(_seg("⟐", "compaction") if i in compactions
                          else _seg(FILL[level], "occupancy"))
         rows.append([_seg(gut), _seg("┌" + "─" * width + "┐", "dim")])
-        rows.append([_seg(f"{'  window':<{GUTTER}}"), _seg("│", "dim"), *parts,
+        rows.append([_seg(f"{'  window':<{GUTTER}}"), _seg(left, "dim"), *parts,
                      _seg("│", "dim"),
                      _seg(f" occupancy · peak {_short(peak)}/{_short(scale)} tok", "dim")])
         rows.append([_seg(gut), _seg("└" + "─" * width + "┘", "dim")])
 
     axis = None
-    t0 = _fmt_ts(timeline[0].get("ts"))
+    # scrolled: the axis starts at the first event still on the bar
+    first = (next((e for e in timeline if e.get("evidence_ref") in col), timeline[0])
+             if offset else timeline[0])
+    t0 = _fmt_ts(first.get("ts"))
     t1 = _fmt_ts(timeline[-1].get("ts"))
     if "--:--:--" not in (t0, t1):
         axis = [_seg(gut), _seg(f"{t0}{'':<{width - len(t0) - len(t1) + 2}}{t1}", "dim")]

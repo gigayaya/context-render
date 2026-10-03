@@ -1,7 +1,7 @@
 """Live snapshot for the ctxr-live Claude Code mod: aggregate → JSON-ready dict.
 
 Pure over the aggregate object (renderers never touch store/filesystem). The map ships
-as segments (context_map_parts) so the band draws the same geometry as the reports;
+as segments (context_map_parts, scroll layout) so the band draws the reports' geometry;
 timeline rows keep every aggregate field plus their listing number `no`.
 """
 
@@ -18,8 +18,9 @@ def live_snapshot(agg: dict, width: int, window_tokens: int,
                   notice: str | None = None) -> dict:
     timeline = agg.get("timeline") or []
     samples = agg.get("context_samples") or []
+    # scroll: marks stay put as the session grows (the band redraws on every refresh)
     rows, axis = context_map_parts(timeline, samples, width=width,
-                                   window_tokens=window_tokens)
+                                   window_tokens=window_tokens, layout="scroll")
     latest = max(samples, key=lambda s: s["idx"]) if samples else None
     session = agg.get("session") or {}
     return {
