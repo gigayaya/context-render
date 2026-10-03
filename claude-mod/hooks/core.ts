@@ -1,6 +1,6 @@
 import type { Seg, Snapshot, TimelineRow } from '../types'
 
-export const SCHEMA_VERSION = 1 // must match context_render/report/live.py LIVE_SCHEMA_VERSION
+export const SCHEMA_VERSION = 2 // must match context_render/report/live.py LIVE_SCHEMA_VERSION
 export const GUTTER = 10 // context_map.GUTTER
 export const RIGHT = 32 // widest right-hand note: " occupancy · peak 999.9k/1M tok"
 export const MIN_WIDTH = 20

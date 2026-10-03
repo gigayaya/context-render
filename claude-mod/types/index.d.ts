@@ -25,6 +25,7 @@ export type Snapshot = {
   timeline: TimelineRow[]
   occupancy: { current: number | null; peak: number | null; window: number }
   warnings: string[]
+  notice: string | null // set when ctxr ran without a manifest (not init'd)
 }
 
 declare module 'claude-code' {

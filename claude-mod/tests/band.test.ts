@@ -9,7 +9,7 @@ const ROW = (no: number, over: Record<string, unknown>) => ({
   confidence: 'exact', est_tokens: 0, ctx_tokens: null, sidechain: false, ...over,
 })
 const SNAP = {
-  schema_version: 1, session_id: 'sess-1', cc_version: '2.1.288', width: 56,
+  schema_version: 2, session_id: 'sess-1', cc_version: '2.1.288', width: 56,
   map: [
     [seg('  '), seg('context window map', 'bold')],
     [seg('           '), seg('2', 'load', 2)],
@@ -23,6 +23,7 @@ const SNAP = {
   ],
   occupancy: { current: null, peak: null, window: 200000 },
   warnings: [] as string[],
+  notice: null as string | null,
 }
 const SURFACES = ['terminal', 'desktop'] as const
 const BAND = (over: Record<string, unknown> = {}) => {
@@ -94,6 +95,27 @@ test('snapshot warnings are not drawn', async ($, on) => {
     const ui = await $.ui.mount({ plugin: 'ctxr-live', surface, ...BAND() })
     expect(await ui.find({ type: 'Text', text: /context window map/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /parse degraded/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('the notice is one dim line under the map', async ($, on) => {
+  const noticed = { ...SNAP, notice: "not init'd: run ctxr init" }
+  await withSnapshot($, on, () => ({ exitCode: 0, stdout: JSON.stringify(noticed), stderr: '' }))
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ plugin: 'ctxr-live', surface, ...BAND() })
+    expect(await ui.find({ type: 'Text', text: /context window map/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: "ctxr-live: not init'd: run ctxr init" })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('the notice stands alone while the map is empty', async ($, on) => {
+  const noticed = { ...SNAP, map: [], axis: null, notice: "not init'd: run ctxr init" }
+  await withSnapshot($, on, () => ({ exitCode: 0, stdout: JSON.stringify(noticed), stderr: '' }))
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ plugin: 'ctxr-live', surface, ...BAND() })
+    expect(await ui.find({ type: 'Text', text: "ctxr-live: not init'd: run ctxr init" })).toBeDefined()
     await ui.unmount()
   }
 })

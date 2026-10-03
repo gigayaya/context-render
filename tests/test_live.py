@@ -9,7 +9,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from context_render.cli import app
-from context_render.report.live import LIVE_SCHEMA_VERSION, live_snapshot
+from context_render.report.live import LIVE_SCHEMA_VERSION, NO_MANIFEST_NOTICE, live_snapshot
 from tests.conftest import make_transcript, user_text
 from tests.test_report import _session_agg
 
@@ -31,7 +31,7 @@ def _transcript(fake_projects) -> Path:
 def test_live_snapshot_shape(tmp_path, fake_repo, rich_session_lines):
     agg = _session_agg(tmp_path, fake_repo, rich_session_lines)
     snap = live_snapshot(agg, width=40, window_tokens=200_000)
-    assert snap["schema_version"] == LIVE_SCHEMA_VERSION == 1
+    assert snap["schema_version"] == LIVE_SCHEMA_VERSION == 2
     assert snap["width"] == 40
     assert [e["no"] for e in snap["timeline"]] == list(range(1, len(snap["timeline"]) + 1))
     assert all(isinstance(e["sidechain"], bool) for e in snap["timeline"])
@@ -45,6 +45,7 @@ def test_live_snapshot_shape(tmp_path, fake_repo, rich_session_lines):
     # USAGE fixture: 10k prompt tokens per sampled turn vs the 200k window
     assert snap["occupancy"] == {"current": 10_000, "peak": 10_000, "window": 200_000}
     assert isinstance(snap["warnings"], list)
+    assert snap["notice"] is None
     json.dumps(snap)  # serializable as-is
 
 
@@ -68,6 +69,23 @@ def test_live_cli_json(fake_repo, fake_projects, monkeypatch):
     snap = json.loads(r.output)
     assert snap["session_id"].startswith(SID)
     assert snap["width"] == 40
+
+
+def test_live_without_init_scans_in_memory(fake_repo, fake_projects, monkeypatch):
+    """No manifest: live scans the scaffolds in memory (same components a fresh init would
+    write), says so in `notice`, and creates nothing under .context-render/."""
+    monkeypatch.chdir(fake_repo)
+    monkeypatch.setenv("CONTEXT_RENDER_PROJECTS_DIR", str(fake_projects))
+    r = runner.invoke(app, ["live", SID, "--json"])
+    assert r.exit_code == 0, r.output
+    bare = json.loads(r.output)
+    assert bare["notice"] == NO_MANIFEST_NOTICE
+    assert not (fake_repo / ".context-render").exists()
+
+    assert runner.invoke(app, ["init", "--yes", "--no-hook"]).exit_code == 0
+    inited = json.loads(runner.invoke(app, ["live", SID, "--json"]).output)
+    assert inited["notice"] is None
+    assert {**bare, "notice": None} == inited
 
 
 def test_live_serves_a_just_written_session(fake_repo, fake_projects, monkeypatch):

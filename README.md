@@ -67,6 +67,7 @@ See [docs/reports.md](docs/reports.md) for how to read each view in detail.
 - **`/ctx`**: opens the full context timeline in a pane (`#row time ctx-tokens ─ tag component detail`, heuristic and subagent rows dimmed).
 - **Refresh**: starts at session start, and again after every tool call and every completed turn, and when the terminal width changes. It waits for `debounceMs` of quiet and runs only one `ctxr` process at a time, with a 5s timeout.
 - **Narrow terminals** (under 64 columns) get a one-line pointer to `/ctx` in place of the map.
+- **No `ctxr init` needed**: in a repo without a manifest, `ctxr live` scans the scaffolds in memory (the same components a fresh `init` would write) and the band and pane add a dim line saying so. Archiving still needs `ctxr init` (then `ctxr sync`, or the SessionEnd hook from `init --hook`); until then `sessions` / `report` have nothing for this repo.
 
 Load it for a session:
 
@@ -74,9 +75,9 @@ Load it for a session:
 claude --plugin-dir /path/to/context-render/claude-mod
 ```
 
-The plugin runs `ctxr live <session-id> --json --width <cols>` in the session's working directory. If `ctxr` isn't on your PATH, set the plugin's `command` option in `/config`, for example `env PYTHONPATH=/path/to/context-render /path/to/context-render/.venv/bin/python -m context_render.cli`. `debounceMs` (default 400) sets the quiet time after a tool call before a refresh.
+The plugin runs `ctxr live <session-id> --json --width <cols>` in the session's working directory. If `ctxr` isn't on your PATH, set the plugin's `command` option in `/config`, for example `env PYTHONPATH=/path/to/context-render /path/to/context-render/.venv/bin/python -m context_render.cli`. `debounceMs` (default 400) sets the quiet time after a tool call before a refresh. Keep the mod and `ctxr` from the same version: a mismatch shows `snapshot schema … not supported` in place of the map.
 
-The mod only draws. Attribution and map geometry are computed in Python by `ctxr live`, which is read-only: it never writes `db.sqlite`, so the SessionEnd hook still archives the session as usual. The mod makes no API calls.
+The mod only draws. Attribution and map geometry are computed in Python by `ctxr live`, which is read-only: it never writes `db.sqlite`, so the SessionEnd hook (if `init --hook` installed it) still archives the session as usual. The mod makes no API calls.
 
 ## The routing map
 
@@ -121,7 +122,7 @@ ctxr help
 | `init` | Scan the repo's scaffolds into `.context-render/manifest.yaml`; optionally installs a SessionEnd hook for auto-ingest |
 | `sync` | Parse past transcripts into the local db (idempotent; `--force` rebuilds) |
 | `sessions` | List ingested sessions; `sessions <id-prefix>` shows any one session's full report |
-| `live` | Read-only JSON snapshot of one session (in-progress sessions allowed): context-window map rows plus timeline, for the ctxr-live mod. Never writes the db |
+| `live` | Read-only JSON snapshot of one session (in-progress sessions allowed): context-window map rows plus timeline, for the ctxr-live mod. Never writes the db; works before `init` (scans the scaffolds in memory and sets `notice`) |
 | `report` | Cross-session aggregate over a time window: per-component status (active / low-use / unused / MISS), daily activity, cost estimate, and a SELF-DERIVATION block — every agent search is a question the harness didn't answer: what the agent went after, grouped and sorted by token cost. `--emit-prompt` packs one row's evidence into a scaffold-drafting prompt (plain text, offline) |
 | `map` | The routing map, measured: prose share per guidance carrier, loading guarantees, bare/echo labels, structure and hop depth, dead routes, and file/symbol reachability from root CLAUDE.md — unreachable `.py` sorted by observed search cost when a db exists. Static, facts with literature notes, no scores ([docs/map-authoring.md](docs/map-authoring.md)) |
 | `map init` | Deterministic routing-map skeleton (paths + TODO labels) plus agent fill instructions; never overwrites — an existing CLAUDE.md sends the skeleton to `.context-render/map-proposal.md` |

@@ -9,7 +9,7 @@ const ROW = (no: number, over: Record<string, unknown>) => ({
   confidence: 'exact', est_tokens: 0, ctx_tokens: null, sidechain: false, ...over,
 })
 const SNAP = {
-  schema_version: 1, session_id: 'sess-1', cc_version: '2.1.288', width: 56,
+  schema_version: 2, session_id: 'sess-1', cc_version: '2.1.288', width: 56,
   map: [[seg('  '), seg('context window map', 'bold')], [seg('           '), seg('2', 'load', 2)]],
   axis: null,
   timeline: [
@@ -19,6 +19,7 @@ const SNAP = {
   ],
   occupancy: { current: null, peak: null, window: 200000 },
   warnings: [] as string[],
+  notice: null as string | null,
 }
 
 async function ready($: any, on: On) {
@@ -56,6 +57,23 @@ test('the pane lists every timeline row, sidechain included', async ($, on) => {
     expect(await ui.find({ type: 'Text', text: /^ {2}1 .*start cc 2\.1\.288$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^ {2}2 .*─ L claude-md:root root CLAUDE\.md$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /\[subagent:x\] Read b\.md/ })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('the pane leads with the notice', async ($, on) => {
+  const clock = mock.clock(on)
+  sessionStart(on)
+  engineDraws(on)
+  const noticed = { ...SNAP, notice: "not init'd: run ctxr init" }
+  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(noticed), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('session.id', () => ({ value: 'sess-1' }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await clock.advance(400)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'ctxr-live', surface, component: 'Pane', requestId: 'ctxr-live', props: PANE_PROPS })
+    expect(await ui.find({ type: 'Text', text: "ctxr-live: not init'd: run ctxr init" })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /root CLAUDE\.md$/ })).toBeDefined()
     await ui.unmount()
   }
 })

@@ -20,7 +20,7 @@ const row = (no: number, over: Partial<TimelineRow>): TimelineRow => ({
 })
 
 const snap = (over: Partial<Snapshot> = {}): Snapshot => ({
-  schema_version: 1, session_id: 'sess-1', cc_version: '2.1.288', width: 56,
+  schema_version: 2, session_id: 'sess-1', cc_version: '2.1.288', width: 56,
   map: Array.from({ length: 10 }, () => [{ t: 'x', role: null, no: null }]),
   axis: [{ t: '14:00:00', role: 'dim', no: null }],
   timeline: [
@@ -32,6 +32,7 @@ const snap = (over: Partial<Snapshot> = {}): Snapshot => ({
   ],
   occupancy: { current: 1, peak: 1, window: 200000 },
   warnings: [],
+  notice: null,
   ...over,
 })
 
@@ -68,8 +69,8 @@ describe('parseRun', () => {
     expect(garbage.kind === 'error' && garbage.message).toBe('ctxr-live: unreadable ctxr output')
   })
   test('unknown schema version is refused', () => {
-    const out = parseRun(0, JSON.stringify(snap({ schema_version: 2 })), '')
-    expect(out.kind === 'error' && out.message).toMatch(/schema 2 not supported/)
+    const out = parseRun(0, JSON.stringify(snap({ schema_version: 3 })), '')
+    expect(out.kind === 'error' && out.message).toMatch(/schema 3 not supported/)
   })
   test('spawn failure names the command', () => {
     const out = spawnFailed('ctxr', new Error('ENOENT'))

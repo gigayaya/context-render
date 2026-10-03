@@ -46,11 +46,11 @@ Labels are row numbers of the full timeline listing, subagent (sidechain) rows i
 
 ## Live map above the prompt (ctxr-live mod)
 
-`claude-mod/` is a Claude Code plugin that keeps this session's context window map above the prompt, refreshed after every tool call (debounced; one `ctxr live` process at a time). Below the map: the last three loads/actions (`#row ▼/▲ tag component confidence tokens`, heuristic rows dim). `/ctx` opens the full timeline in a pane; in the fullscreen terminal, hovering a map label shows that row's details.
+`claude-mod/` is a Claude Code plugin that keeps this session's context window map above the prompt, refreshed after every tool call (debounced; one `ctxr live` process at a time). The band draws only the map's load (▼) and action (▲) arrow rows — the timeline-number lanes, occupancy bar and time axis are left out to keep it small. `/ctx` opens the full timeline in a pane (`#row time ctx-tokens ─ tag component detail`, heuristic and subagent rows dim).
 
 Load it for a session: `claude --plugin-dir /path/to/context-render/claude-mod`. If `ctxr` is not on PATH (or the editable install is hidden by the macOS chflag issue), set the plugin's `command` option in `/config`, e.g. `env PYTHONPATH=/path/to/context-render /path/to/context-render/.venv/bin/python -m context_render.cli`.
 
-`ctxr live <id> --json` is read-only: it never writes `db.sqlite`; the SessionEnd hook still archives the session. Errors show as one dim line; a failed refresh keeps the last map marked `⚠ stale`. Terminals narrower than 64 columns get a one-line pointer to `/ctx` instead of the map.
+`ctxr live <id> --json` is read-only: it never writes `db.sqlite`; the SessionEnd hook (if `init --hook` installed it) still archives the session. Errors show as one dim line; a failed refresh keeps the last map marked `⚠ stale`. Terminals narrower than 64 columns get a one-line pointer to `/ctx` instead of the map. Without a manifest (no `ctxr init` yet), `ctxr live` scans the scaffolds in memory instead of failing, and the snapshot's `notice` adds one dim line to the band and the pane: the session won't be archived until you run `ctxr init`.
 
 ## Subagents
 
