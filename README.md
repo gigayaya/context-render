@@ -59,6 +59,25 @@ The report closes with a **SELF-DERIVATION** block — the top information needs
 
 See [docs/reports.md](docs/reports.md) for how to read each view in detail.
 
+## Live map in Claude Code (ctxr-live mod)
+
+`claude-mod/` ships **ctxr-live**, a Claude Code plugin that keeps the current session's context-window map drawn above the prompt while you work, so you don't need to wait for the session to end and run `ctxr sessions <id>`.
+
+- **The band above the prompt**: the map's load (▼) and action (▲) arrow rows. The timeline-number lanes and the occupancy bar are left out to keep it small. `↻` means a refresh is running; `⚠ stale` means the last refresh failed and the band is showing the previous map.
+- **`/ctx`**: opens the full context timeline in a pane (`#row time ctx-tokens ─ tag component detail`, heuristic and subagent rows dimmed).
+- **Refresh**: starts at session start, and again after every tool call and every completed turn, and when the terminal width changes. It waits for `debounceMs` of quiet and runs only one `ctxr` process at a time, with a 5s timeout.
+- **Narrow terminals** (under 64 columns) get a one-line pointer to `/ctx` in place of the map.
+
+Load it for a session:
+
+```bash
+claude --plugin-dir /path/to/context-render/claude-mod
+```
+
+The plugin runs `ctxr live <session-id> --json --width <cols>` in the session's working directory. If `ctxr` isn't on your PATH, set the plugin's `command` option in `/config`, for example `env PYTHONPATH=/path/to/context-render /path/to/context-render/.venv/bin/python -m context_render.cli`. `debounceMs` (default 400) sets the quiet time after a tool call before a refresh.
+
+The mod only draws. Attribution and map geometry are computed in Python by `ctxr live`, which is read-only: it never writes `db.sqlite`, so the SessionEnd hook still archives the session as usual. The mod makes no API calls.
+
 ## The routing map
 
 `ctxr map` is the one static view — no transcripts needed. It measures your guidance *as a routing map* and what the map fails to cover: per-carrier prose share and label quality, loading guarantees (auto-inject / `@import` / dir-entry / plain reference), structure and hop depth, dead routes (references whose targets no longer exist — the map's own staleness), and which files and Python symbols the agent can reach from root CLAUDE.md by following references versus only by grepping. Unreachable files are sorted by the search cost actually observed in your sessions when a db exists.
@@ -88,6 +107,7 @@ Before deleting anything, read [docs/limitations.md](docs/limitations.md) — us
 ctxr init        [--refresh] [--yes] [--hook|--no-hook]
 ctxr sync        [--since <spec>] [--force]
 ctxr sessions    [<id-prefix>] [--since <spec>] [--md] [--evidence] [--full] [--no-timeline] [--no-graph]
+ctxr live        <id-prefix> --json [--width 60]
 ctxr report      [--since 30d] [--md] [--no-timeline] [--no-graph] [--emit-prompt <#|key>]
 ctxr map         [--md] [--since 30d]
 ctxr map init    [--shape auto|flat|tree] [--output <path>]
@@ -101,6 +121,7 @@ ctxr help
 | `init` | Scan the repo's scaffolds into `.context-render/manifest.yaml`; optionally installs a SessionEnd hook for auto-ingest |
 | `sync` | Parse past transcripts into the local db (idempotent; `--force` rebuilds) |
 | `sessions` | List ingested sessions; `sessions <id-prefix>` shows any one session's full report |
+| `live` | Read-only JSON snapshot of one session (in-progress sessions allowed): context-window map rows plus timeline, for the ctxr-live mod. Never writes the db |
 | `report` | Cross-session aggregate over a time window: per-component status (active / low-use / unused / MISS), daily activity, cost estimate, and a SELF-DERIVATION block — every agent search is a question the harness didn't answer: what the agent went after, grouped and sorted by token cost. `--emit-prompt` packs one row's evidence into a scaffold-drafting prompt (plain text, offline) |
 | `map` | The routing map, measured: prose share per guidance carrier, loading guarantees, bare/echo labels, structure and hop depth, dead routes, and file/symbol reachability from root CLAUDE.md — unreachable `.py` sorted by observed search cost when a db exists. Static, facts with literature notes, no scores ([docs/map-authoring.md](docs/map-authoring.md)) |
 | `map init` | Deterministic routing-map skeleton (paths + TODO labels) plus agent fill instructions; never overwrites — an existing CLAUDE.md sends the skeleton to `.context-render/map-proposal.md` |
@@ -125,11 +146,11 @@ Everything lives under `<repo>/.context-render/`. `manifest.yaml` is the hand-ed
 ## Documentation
 
 - [Three-state model & design principles](docs/three-state-model.md) — what R/L/I mean and how to act on them
-- [Reading the reports](docs/reports.md) — file loads, timeline, context-window map, colors, exit codes
+- [Reading the reports](docs/reports.md) — file loads, timeline, context-window map, live map mod, colors, exit codes
 - [Configuration](docs/configuration.md) — directory layout, config.yaml, SessionEnd hook
 - [Limitations](docs/limitations.md) — read before deleting anything
 - [Development](docs/development.md)
 
 ## Privacy
 
-Zero uploads, zero telemetry, zero API calls in the core flow; transcripts are read-only and all outputs live in your repo.
+Zero uploads, zero telemetry, zero API calls in the core flow, and the ctxr-live mod adds none either; transcripts are read-only and all outputs live in your repo.
