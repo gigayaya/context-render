@@ -6,9 +6,9 @@
 |---|---|---|
 | `.claude-plugin/plugin.json` | Manifest + `userConfig` (`command`, `debounceMs`) | Adding options |
 | `types/index.d.ts` | Snapshot types mirroring `ctxr live` JSON + `PluginState['ctxr-live']` | Changing the JSON schema (bump both `SCHEMA_VERSION`s) |
-| `hooks/core.ts` | Pure helpers: width, argv, result parsing, timeline lines, band plan (drops the occupancy bar) | Changing formatting or parsing |
+| `hooks/core.ts` | Pure helpers: width, argv, result parsing, timeline lines, band row filters (occupancy bar, number lanes) | Changing formatting or parsing |
 | `hooks/scheduler.ts` | Debounce + single-flight (one ctxr process at a time) | Changing refresh timing |
-| `hooks/view.tsx` | Pure trees: band, pane, hover cards | Changing what is drawn |
+| `hooks/view.tsx` | Pure trees: band, pane | Changing what is drawn |
 | `hooks/register.tsx` | Wiring: session.start / tool.call / turn.complete / ui.render / `/ctx` | Changing triggers |
 | `tests/` | `claude plugin test claude-mod`; `engine.ts` holds the bottom (engine) answers — calls on `$` answer `{ value }`, the test `$` has no `state` noun so `memState` stands in | — |
 

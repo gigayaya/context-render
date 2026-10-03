@@ -52,14 +52,48 @@ async function withSnapshot($: any, on: On, reply: () => Reply = OK) {
   return { clock, runs }
 }
 
-test('draws the map and the axis, no recent-event lines', async ($, on) => {
+test('draws the map only: no axis, no recent-event lines', async ($, on) => {
   await withSnapshot($, on)
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: 'ctxr-live', surface, ...BAND() })
     expect(await ui.find({ type: 'Text', text: /context window map/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /14:00:00/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /14:00:00/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /#2 ▼/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /#3 ▲/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('draws the arrow rows without their number lanes', async ($, on) => {
+  const laned = {
+    ...SNAP,
+    map: [
+      [seg('  '), seg('context window map', 'bold')],
+      [seg('           '), seg('2', 'load', 2)],
+      [seg('           '), seg('1', 'load', 1)],
+      [seg('  loads    '), seg('▼', 'load')],
+      [seg('  actions  '), seg('▲', 'action')],
+      [seg('           '), seg('3', 'action', 3)],
+      [seg('           '), seg('4', 'action', 4)],
+    ],
+  }
+  await withSnapshot($, on, () => ({ exitCode: 0, stdout: JSON.stringify(laned), stderr: '' }))
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ plugin: 'ctxr-live', surface, ...BAND() })
+    expect(await ui.find({ type: 'Text', text: '▼' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '▲' })).toBeDefined()
+    for (const no of ['1', '2', '3', '4']) expect(await ui.find({ type: 'Text', text: no })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('snapshot warnings are not drawn', async ($, on) => {
+  const warned = { ...SNAP, warnings: ['⚠ parse degraded: unknown events [pr-link×1]'] }
+  await withSnapshot($, on, () => ({ exitCode: 0, stdout: JSON.stringify(warned), stderr: '' }))
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ plugin: 'ctxr-live', surface, ...BAND() })
+    expect(await ui.find({ type: 'Text', text: /context window map/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /parse degraded/ })).toBeUndefined()
     await ui.unmount()
   }
 })
@@ -111,16 +145,6 @@ test('a failed refresh keeps the map and marks it stale', async ($, on) => {
     const ui = await $.ui.mount({ plugin: 'ctxr-live', surface, ...BAND() })
     expect(await ui.find({ type: 'Text', text: /context window map/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /⚠ stale/ })).toBeDefined()
-    await ui.unmount()
-  }
-})
-
-test('degrades: the axis goes when rows are short', async ($, on) => {
-  await withSnapshot($, on)
-  for (const surface of SURFACES) {
-    const ui = await $.ui.mount({ plugin: 'ctxr-live', surface, ...BAND({ maxRows: 3 }) })
-    expect(await ui.find({ type: 'Text', text: /context window map/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /14:00:00/ })).toBeUndefined()
     await ui.unmount()
   }
 })

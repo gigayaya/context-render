@@ -104,18 +104,13 @@ export function timelineLine(row: TimelineRow): string {
   return `${String(row.no).padStart(3)} ${hhmmss(row.ts)} ${ctx.padStart(6)} ─ ${rowTag(row)}${mark} ${what}`
 }
 
-export type BandPlan = { map: Seg[][]; axis: Seg[] | null }
-
 // the band leaves out the occupancy bar: the `window` row plus the box borders around it
 export function withoutOccupancy(map: Seg[][]): Seg[][] {
   const at = map.findIndex(segs => segs[0]?.t.trim() === 'window')
   return at < 0 ? map : [...map.slice(0, Math.max(0, at - 1)), ...map.slice(at + 2)]
 }
 
-// when the band has fewer rows than the full drawing, the axis goes first
-export function planBand(s: Snapshot, maxRows: number, hasWarnings: boolean): BandPlan {
-  const map = withoutOccupancy(s.map)
-  const fixed = map.length + (hasWarnings ? 1 : 0)
-  const axisRows = s.axis ? 1 : 0
-  return { map, axis: fixed + axisRows <= maxRows ? s.axis : null }
+// label lanes are the rows carrying timeline numbers; the band draws the arrow rows without them
+export function withoutLabelLanes(map: Seg[][]): Seg[][] {
+  return map.filter(segs => !segs.some(s => s.no !== null))
 }

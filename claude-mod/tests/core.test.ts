@@ -6,11 +6,12 @@ import {
   innerWidth,
   liveArgv,
   parseRun,
-  planBand,
   rowTag,
   shortTokens,
   spawnFailed,
   timelineLine,
+  withoutLabelLanes,
+  withoutOccupancy,
 } from '../hooks/core'
 
 const row = (no: number, over: Partial<TimelineRow>): TimelineRow => ({
@@ -96,16 +97,7 @@ describe('timeline lines', () => {
   })
 })
 
-describe('planBand degrades by maxRows', () => {
-  test('everything fits', () => {
-    const p = planBand(snap(), 20, false)
-    expect([p.map.length, p.axis !== null]).toEqual([10, true])
-  })
-  test('drops the axis when rows are short', () => {
-    expect(planBand(snap(), 11, false).axis).not.toBeNull()
-    expect(planBand(snap(), 10, false).axis).toBeNull()
-    expect(planBand(snap(), 11, true).axis).toBeNull() // the warnings line takes a row
-  })
+describe('withoutOccupancy', () => {
   test('leaves out the occupancy bar (window row and its borders)', () => {
     const seg = (t: string, role: Seg['role'] = null): Seg => ({ t, role, no: null })
     const box = [seg('          '), seg('└──┘', 'dim')]
@@ -116,8 +108,20 @@ describe('planBand degrades by maxRows', () => {
       [seg('  window  '), seg('│', 'dim'), seg('▂', 'occupancy'), seg('│', 'dim')],
       [seg('          '), seg('└──┘', 'dim')],
     ]
-    const p = planBand(snap({ map }), 20, false)
-    expect(p.map).toEqual(map.slice(0, 2))
-    expect(planBand(snap({ map: map.slice(0, 2) }), 20, false).map).toEqual(map.slice(0, 2))
+    expect(withoutOccupancy(map)).toEqual(map.slice(0, 2))
+    expect(withoutOccupancy(map.slice(0, 2))).toEqual(map.slice(0, 2))
+  })
+})
+
+describe('withoutLabelLanes', () => {
+  const seg = (t: string, role: Seg['role'] = null, no: number | null = null): Seg => ({ t, role, no })
+  const lane = (...nos: number[]) => [seg('           '), ...nos.map(n => seg(String(n), 'load', n))]
+  const legend = [seg('  '), seg('context window map', 'bold')]
+  const loads = [seg('  loads    '), seg('▼ ▼', 'load')]
+  const box = [seg('          '), seg('│▅ █│', 'dim')]
+  const actions = [seg('  actions  '), seg('▲ ▲', 'action')]
+  test('drops every row that carries timeline numbers', () => {
+    const map = [legend, lane(10), lane(2, 7), loads, box, actions, lane(4, 8), lane(5)]
+    expect(withoutLabelLanes(map)).toEqual([legend, loads, box, actions])
   })
 })

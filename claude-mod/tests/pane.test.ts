@@ -38,10 +38,6 @@ const PANE_PROPS = {
   title: 'context timeline', isFocused: false, bodyColumns: 100, placement: 'dock' as const,
   scroll: { offset: 0, bodyRows: 30 }, view: {},
 }
-const BAND_PROPS = {
-  hasSurvey: false, isWorking: false, maxRows: 30, bodyColumns: 100,
-  scroll: { offset: 0, bodyRows: 30 }, view: {},
-}
 
 test('/ctx opens the pane', async ($, on) => {
   const { opened } = await ready($, on)
@@ -62,16 +58,4 @@ test('the pane lists every timeline row, sidechain included', async ($, on) => {
     expect(await ui.find({ type: 'Text', text: /\[subagent:x\] Read b\.md/ })).toBeDefined()
     await ui.unmount()
   }
-})
-
-test('hover cards appear only on the fullscreen terminal', async ($, on) => {
-  await ready($, on)
-  const band = { component: 'AbovePrompt' as const, props: BAND_PROPS }
-  const full = await $.ui.mount({ plugin: 'ctxr-live', surface: 'terminal', viewport: { columns: 100, rows: 40, isFullscreen: true }, ...band })
-  expect(await full.find({ key: 'card-2' })).toBeDefined()
-  expect(await full.find({ type: 'Text', text: /#2 L claude-md:root/ })).toBeDefined()
-  await full.unmount()
-  const desk = await $.ui.mount({ plugin: 'ctxr-live', surface: 'desktop', ...band })
-  expect(await desk.find({ key: 'card-2' })).toBeUndefined()
-  await desk.unmount()
 })
