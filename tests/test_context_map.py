@@ -41,8 +41,21 @@ def synthetic_timeline() -> list[dict]:
     ]
 
 
+FIXED_TMP_LEN = 240
+
 SAMPLES = [{"idx": 3, "tokens": 40_000}, {"idx": 8, "tokens": 90_000},
            {"idx": 14, "tokens": 30_000}]
+
+
+@pytest.fixture
+def tmp_path(tmp_path):
+    """Pad the temp root to a fixed length: action est_tokens count tool_use input bytes,
+    which embed the fake_repo path, so the golden must not depend on the machine's
+    temp-dir length (macOS /private/var/folders/... vs Linux /tmp/...)."""
+    assert len(str(tmp_path)) < FIXED_TMP_LEN
+    padded = tmp_path / ("p" * (FIXED_TMP_LEN - len(str(tmp_path)) - 1))
+    padded.mkdir()
+    return padded
 
 
 @pytest.fixture

@@ -17,7 +17,7 @@ Pytest suite (`.venv/bin/python -m pytest`; pythonpath set in pyproject) — eve
 | `test_store_scan.py` | Store writes + pipeline scan flow | Changing `store/` or `pipeline.py` |
 | `test_migration.py` | DB migration chain | Adding a schema migration |
 | `test_report.py` | Renderers + terminal/markdown consistency | Changing `context_render/report/` |
-| `test_context_map.py` | Map golden (byte-identical, TZ pinned to UTC; regenerate only with `UPDATE_GOLDEN=1` on purpose), segment layer, width, sidechain row numbering | Changing `report/context_map.py` |
+| `test_context_map.py` | Map golden (byte-identical, TZ pinned to UTC, temp root padded to a fixed length since action tokens embed the repo path; regenerate only with `UPDATE_GOLDEN=1` on purpose), segment layer, width, sidechain row numbering | Changing `report/context_map.py` |
 | `test_live.py` | `live_snapshot` + `ctxr live` CLI: shape, width, read-only DB, exit codes, truncated last line, no network imports | Changing `report/live.py` or the live command |
 | `test_guidance_refs.py` | Reference extraction/resolution; dry-run findings (bare basenames, slash idioms, placeholders, leading-`/`) frozen as regressions | Changing `context_render/guidance/refs.py` |
 | `test_guidance_graph.py` | Closure/provenance/toggles; `test_locked_defaults` is the tripwire for the locked toggle defaults | Changing `context_render/guidance/graph.py` |
