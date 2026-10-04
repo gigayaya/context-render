@@ -2,6 +2,8 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # manual dry run: same build, published to TestPyPI instead of PyPI
+  workflow_dispatch:
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -15,6 +17,7 @@ jobs:
       - run: pytest -q
       # the tag is the release trigger; refuse to publish if it disagrees with __version__
       - name: Check tag matches package version
+        if: github.event_name == 'push'
         run: |
           version=$(python -c "import context_render; print(context_render.__version__)")
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
@@ -27,8 +30,27 @@ jobs:
         with:
           name: dist
           path: dist/
+  publish-testpypi:
+    needs: build
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # TestPyPI's trusted publisher must name environment `testpypi`
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/context-render
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
   publish:
     needs: build
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     # PyPI Trusted Publishing: no token stored; PyPI trusts this repo + workflow + environment
     environment:
