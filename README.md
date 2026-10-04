@@ -61,57 +61,36 @@ See [docs/reports.md](docs/reports.md) for how to read each view in detail.
 
 ## Live map in Claude Code (ctxr-live mod)
 
-`claude-mod/` ships **ctxr-live**, a Claude Code plugin that keeps the current session's context-window map drawn above the prompt while you work, so you don't need to wait for the session to end and run `ctxr sessions <id>`.
+**ctxr-live** (`claude-mod/`) keeps the current session's context-window map above the prompt while you work — no need to wait for the session to end.
 
 ![ctxr-live: the context-window map band drawn above the Claude Code prompt](docs/images/ctxr_live.png)
 
-- **The band above the prompt**: the map's load (▼) and action (▲) arrow rows. The timeline-number lanes and the occupancy bar are left out to keep it small. The map fills like a progress bar: one column per event from the left edge, marks that are already drawn stay put, and once it reaches the right edge the oldest events scroll out on the left (the box's left border turns to `┆`). `↻` means a refresh is running; `⚠ stale` means the last refresh failed and the band is showing the previous map.
-- **`/ctx`**: opens the full context timeline in a pane (`#row time ctx-tokens ─ tag component detail`, heuristic and subagent rows dimmed).
-- **Refresh**: starts at session start, and again after every tool call and every completed turn, and when the terminal width changes. It waits for `debounceMs` of quiet and runs only one `ctxr` process at a time, with a 5s timeout.
-- **Narrow terminals** (under 64 columns) get a one-line pointer to `/ctx` in place of the map.
-- **No `ctxr init` needed**: in a repo without a manifest, `ctxr live` scans the scaffolds in memory (the same components a fresh `init` would write) and the band and pane add a dim line saying so. Archiving still needs `ctxr init` (then `ctxr sync`, or the SessionEnd hook from `init --hook`); until then `sessions` / `report` have nothing for this repo.
-
-Install it from this repo's plugin marketplace (no clone needed), inside Claude Code:
+Install inside Claude Code (needs the `ctxr` command, see [Install](#install)):
 
 ```
 /plugin marketplace add gigayaya/context-render
 /plugin install ctxr-live@context-render
 ```
 
-or from a shell: `claude plugin marketplace add gigayaya/context-render && claude plugin install ctxr-live@context-render`. Pull later versions with `/plugin marketplace update context-render`. The mod still needs the `ctxr` command itself (see [Install](#install)).
-
-From a clone, load it for one session instead:
-
-```bash
-claude --plugin-dir /path/to/context-render/claude-mod
-```
-
-The plugin runs `ctxr live <session-id> --json --width <cols>` in the session's working directory. If `ctxr` isn't on your PATH, set the plugin's `command` option in `/config`, for example `env PYTHONPATH=/path/to/context-render /path/to/context-render/.venv/bin/python -m context_render.cli`. `debounceMs` (default 400) sets the quiet time after a tool call before a refresh. Keep the mod and `ctxr` from the same version: a mismatch shows `snapshot schema … not supported` in place of the map.
-
-The mod only draws. Attribution and map geometry are computed in Python by `ctxr live`, which is read-only: it never writes `db.sqlite`, so the SessionEnd hook (if `init --hook` installed it) still archives the session as usual. The mod makes no API calls.
+Type `/ctx` to open the full timeline in a pane. No `ctxr init` needed; the mod is read-only and makes no API calls. If `ctxr` isn't on your PATH, set the plugin's `command` option in `/config`. Details: [docs/reports.md](docs/reports.md#live-map-above-the-prompt-ctxr-live-mod).
 
 ## The routing map
 
-`ctxr map` is the one static view — no transcripts needed. It measures your guidance *as a routing map* and what the map fails to cover: per-carrier prose share and label quality, loading guarantees (auto-inject / `@import` / dir-entry / plain reference), structure and hop depth, dead routes (references whose targets no longer exist — the map's own staleness), and which files and Python symbols the agent can reach from root CLAUDE.md by following references versus only by grepping. Unreachable files are sorted by the search cost actually observed in your sessions when a db exists.
+`ctxr map` is the one static view — no transcripts needed. It checks whether your guidance works as a routing map: carrier quality, loading guarantees, dead routes, and which files the agent can reach from root CLAUDE.md versus only by grepping.
 
-`ctxr map init` generates a deterministic skeleton (paths + TODO labels) plus fill instructions for your agent, which does the semantic half so the tool stays offline. The guidelines behind the measurements come from the research program this tool grew out of; see [docs/map-authoring.md](docs/map-authoring.md) for the mapping and the authoring loop.
+`ctxr map init` generates a skeleton (paths + TODO labels) for your agent to fill in. See [docs/map-authoring.md](docs/map-authoring.md).
 
 ## The iteration loop
 
-Writing scaffolds without observability is shooting without watching the rim: you rewrite a skill's description and never learn whether the next task triggered it. context-render closes that loop:
+Rewriting a skill's description without observability means never learning whether the next task triggered it. context-render closes that loop:
 
 1. **Write** a skill (or command, subagent, CLAUDE.md).
 2. **Run** a real task in Claude Code.
-3. **Check**: `ctxr sessions` to find the session, then `ctxr sessions <id-prefix>` — stuck at `R` (never loaded)? The description/trigger never matched. Stuck at `L` (loaded, never invoked)? The content didn't earn a use. A `STALE COPIES` row that never re-read? The world changed and the agent didn't know.
-4. **Fix** the trigger or the content, run the next task.
-5. **Verify the fix landed**: run `sessions <id-prefix>` on the next session, or `report --since 30d` to see the component's state across recent sessions.
+3. **Check** with `ctxr sessions <id-prefix>`: stuck at `R` (never loaded)? The trigger never matched. Stuck at `L` (loaded, never invoked)? The content didn't earn a use. A `STALE COPIES` row never re-read? The file changed and the agent didn't know.
+4. **Fix** the trigger or content, run the next task.
+5. **Verify** on the next session, or weekly with `report --since 30d`.
 
-The loop stays inside "did it fire". Whether the scaffold made the output *better* is an eval question, and evals belong to the scaffold's author — this tool's job is to make the firing observable.
-
-- **After a task**: run `sessions`, then `sessions <id-prefix>` on the new row.
-- **Weekly**: run `report --since 30d`, review unused components, delete or rewrite low-use ones.
-
-Before deleting anything, read [docs/limitations.md](docs/limitations.md) — used ≠ useful, and low use may just mean no relevant task came up in the window.
+It measures "did it fire", not "did it make the output better" — that's an eval question. Before deleting anything, read [docs/limitations.md](docs/limitations.md): used ≠ useful.
 
 ## Commands
 
@@ -119,41 +98,40 @@ Before deleting anything, read [docs/limitations.md](docs/limitations.md) — us
 ctxr init        [--refresh] [--yes] [--hook|--no-hook]
 ctxr sync        [--since <spec>] [--force]
 ctxr sessions    [<id-prefix>] [--since <spec>] [--md] [--evidence] [--full] [--no-timeline] [--no-graph]
-ctxr live        <id-prefix> --json [--width 60]
+ctxr live        <id-prefix> --json [--width 60]   # used by the ctxr-live mod
 ctxr report      [--since 30d] [--md] [--no-timeline] [--no-graph] [--emit-prompt <#|key>]
 ctxr map         [--md] [--since 30d]
 ctxr map init    [--shape auto|flat|tree] [--output <path>]
 ctxr clear       [--yes]
 ctxr remove-hook
-ctxr help
+ctxr help | --version
 ```
 
 | Command | What it does |
 |---|---|
-| `init` | Scan the repo's scaffolds into `.context-render/manifest.yaml`; optionally installs a SessionEnd hook for auto-ingest |
-| `sync` | Parse past transcripts into the local db (idempotent; `--force` rebuilds) |
-| `sessions` | List ingested sessions; `sessions <id-prefix>` shows any one session's full report |
-| `live` | Read-only JSON snapshot of one session (in-progress sessions allowed): context-window map rows plus timeline, for the ctxr-live mod. Never writes the db; works before `init` (scans the scaffolds in memory and sets `notice`) |
-| `report` | Cross-session aggregate over a time window: per-component status (active / low-use / unused / MISS), daily activity, cost estimate, and a SELF-DERIVATION block — every agent search is a question the harness didn't answer: what the agent went after, grouped and sorted by token cost. `--emit-prompt` packs one row's evidence into a scaffold-drafting prompt (plain text, offline) |
-| `map` | The routing map, measured: prose share per guidance carrier, loading guarantees, bare/echo labels, structure and hop depth, dead routes, and file/symbol reachability from root CLAUDE.md — unreachable `.py` sorted by observed search cost when a db exists. Static, facts with literature notes, no scores ([docs/map-authoring.md](docs/map-authoring.md)) |
-| `map init` | Deterministic routing-map skeleton (paths + TODO labels) plus agent fill instructions; never overwrites — an existing CLAUDE.md sends the skeleton to `.context-render/map-proposal.md` |
-| `clear` | Delete recorded data (db + reports); manifest/config are kept. `sync` only rebuilds sessions whose transcripts still exist — `clear` names the ones that would be lost for good |
-| `remove-hook` | Remove the SessionEnd hook that `init --hook` installed, including hooks written before the `ctxr` rename (other settings untouched) |
+| `init` | Scan the repo's scaffolds into `.context-render/manifest.yaml`; optionally install a SessionEnd hook for auto-ingest |
+| `sync` | Parse past transcripts into the local db (idempotent; `--force` re-parses everything still on disk) |
+| `sessions` | List ingested sessions; `sessions <id-prefix>` shows one session's full report |
+| `live` | Read-only JSON snapshot of a (possibly in-progress) session, for the ctxr-live mod |
+| `report` | Cross-session aggregate: per-component status (active / low-use / unused / MISS), activity, cost, SELF-DERIVATION. `--emit-prompt` turns one row into a scaffold-drafting prompt |
+| `map` | Static routing-map measurements ([docs/map-authoring.md](docs/map-authoring.md)) |
+| `map init` | Routing-map skeleton plus fill instructions; never overwrites an existing CLAUDE.md |
+| `clear` | Delete the db and reports (manifest/config kept); warns about sessions that can't be rebuilt |
+| `remove-hook` | Remove the SessionEnd hook that `init --hook` installed |
 
 Common flags:
 
 - `--since` accepts `30d` / `12w` / `2026-06-01` (bare dates are local midnight; an explicit offset like `2026-06-01T00:00:00+08:00` is honored)
 - `--md` writes the complete markdown report to `.context-render/reports/` (terminal output truncates long lists)
 - `--full` shows the complete session report in the terminal, keeping colors (no truncation, no file written)
+- `--evidence` attaches the raw transcript events behind each attribution to a session report
 - `--no-timeline` / `--no-graph` hide report sections; `NO_COLOR` disables colors
-
-Session reports include a per-file load list, an action timeline, and a context-window map — see [docs/reports.md](docs/reports.md) for how to read them.
 
 ## Data & configuration
 
 Everything lives under `<repo>/.context-render/`. `manifest.yaml` is the hand-editable, version-controlled asset. `config.yaml` is optional — thresholds, billing mode, price table: see [docs/configuration.md](docs/configuration.md).
 
-`db.sqlite` is an archive, not a cache. Claude Code expires transcripts on a rolling window (`cleanupPeriodDays`, default 30 days), so `~/.claude/projects/` is a buffer rather than a source of truth: a full re-parse takes well under a second, but it can only recover sessions whose transcripts are still on disk. Once a transcript expires, its rows in `db.sqlite` are the only record left. It is gitignored — back it up if you want history beyond the retention window, and never "delete and rebuild" it to fix a problem.
+`db.sqlite` is an archive, not a cache: Claude Code expires transcripts after `cleanupPeriodDays` (default 30), after which the db is the only record. It is gitignored — back it up, and never delete and rebuild it to fix a problem.
 
 ## Documentation
 
