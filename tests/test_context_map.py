@@ -11,6 +11,7 @@ from context_render.report.context_map import (
     context_map_lines,
     context_map_parts,
     context_map_rows,
+    context_map_vertical,
     last_marks,
     render_rows,
     window_scale,
@@ -250,3 +251,96 @@ def test_last_marks_skip_sidechain_and_scrolled_out_rows():
 
 def test_last_marks_of_an_empty_map():
     assert last_marks([], [], width=20) == {"load": None, "action": None}
+
+
+# --- vertical map (ctxr-live sidebar): the band turned 90° clockwise ---
+
+def _text(row) -> str:
+    return "".join(s["t"] for s in row)
+
+
+def _event_rows(v) -> list:
+    return v["rows"][3:-1]  # header, legend, top border … bottom border
+
+
+def test_vertical_rows_only_for_marked_events():
+    tl = [
+        _row("session_start", -1, "cc 2.1.207"),
+        _row("claude_md", 0, "root", transition="loaded", component="claude-md:root"),
+        _row("action", 1, "pytest", tool="Bash"),
+        _row("file_read", 2, "Read a.md"),
+    ]
+    # a sample-only rank (idx 5) takes no row in the sidebar
+    v = context_map_vertical(tl, [{"idx": 5, "tokens": 1000}], height=20)
+    assert len(_event_rows(v)) == 3
+    assert v["row_no"] == [None, None, None, 2, 3, 4, None]
+    assert len(v["rows"]) == len(v["row_no"])
+    assert _text(v["rows"][0]) == " ctx map"
+    assert _text(v["rows"][1]) == " ▶ act ◀ inj"
+    assert _text(v["rows"][2]) == " ┌──┐"
+    assert _text(v["rows"][-1]) == " └──┘"
+
+
+def test_vertical_arrows_sit_right_of_the_bar_in_two_fixed_cells():
+    tl = [
+        _row("claude_md", 0, "root", transition="loaded", component="claude-md:root"),
+        _row("action", 1, "pytest", tool="Bash"),
+        _row("skill", 2, "x", transition="loaded", component="skill:x"),
+        _row("skill", 2, "x", transition="invoked", component="skill:x"),
+    ]
+    load, act, both = (_text(r) for r in _event_rows(context_map_vertical(tl, [], height=20)))
+    for t in (load, act, both):
+        assert t[1] == "│" and t[4] == "│" and t[5] == " "
+    assert load[6:8] == " ◀" and load[2] == " " and load[3] != " "
+    assert act[6:8] == "▶ " and act[2] != " " and act[3] == " "
+    assert both[6:8] == "▶◀" and both[2] != " " and both[3] != " "
+
+
+def test_vertical_compaction_row():
+    tl = [_row("action", 0, "a", tool="Bash"), _row("compaction", 1, "compacted"),
+          _row("file_read", 2, "Read a.md")]
+    v = context_map_vertical(tl, [], height=20)
+    comp = _event_rows(v)[1]
+    assert _text(comp)[2:4] == "⟐⟐" and _text(comp)[6:8] == "  "
+    assert {s["role"] for s in comp[2:4]} == {"compaction"}
+    assert v["row_no"][4] == 2
+
+
+def test_vertical_grows_down_then_scrolls_out_at_the_top():
+    v = context_map_vertical(_actions(5), [], height=20)
+    assert _text(v["rows"][2]) == " ┌──┐"
+    assert v["row_no"][3:-1] == [1, 2, 3, 4, 5]
+    v = context_map_vertical(_actions(30), [], height=20)
+    assert _text(v["rows"][2]) == " ┌┄┄┐"
+    assert v["row_no"][3:-1] == list(range(11, 31))  # rows 1..10 scrolled out
+
+
+def test_vertical_row_no_takes_the_newest_row_and_skips_sidechain():
+    tl = [
+        _row("claude_md", 0, "root", transition="loaded", component="claude-md:root"),
+        _row("claude_md", 0, "global", transition="loaded", component="claude-md:global"),
+        _row("file_read", 1, "[subagent:x] Read b.md", sidechain=True),
+    ]
+    v = context_map_vertical(tl, [], height=20)
+    assert v["row_no"][3:-1] == [2]
+
+
+def test_vertical_levels_share_the_band_scale():
+    v = context_map_vertical(_actions(1, est=lambda i: 50), [], height=20)
+    assert _text(_event_rows(v)[0])[2] == "█"
+    # the huge first event scrolls out; visible ones stay at the minimum tick
+    v = context_map_vertical(_actions(30, est=lambda i: 100_000 if i == 0 else 10), [], height=20)
+    assert {_text(r)[2] for r in _event_rows(v)} == {"▏"}
+
+
+def test_vertical_of_an_empty_map():
+    assert context_map_vertical([], [], height=20) is None
+    assert context_map_vertical([_row("session_start", -1, "cc")], [], height=20) is None
+
+
+def test_vertical_segments_use_known_roles():
+    v = context_map_vertical(synthetic_timeline(), SAMPLES, height=20)
+    for row in v["rows"]:
+        for seg in row:
+            assert set(seg) == {"t", "role", "no"} and seg["no"] is None
+            assert seg["role"] in ROLES

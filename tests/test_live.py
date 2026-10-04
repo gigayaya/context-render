@@ -31,7 +31,8 @@ def _transcript(fake_projects) -> Path:
 def test_live_snapshot_shape(tmp_path, fake_repo, rich_session_lines):
     agg = _session_agg(tmp_path, fake_repo, rich_session_lines)
     snap = live_snapshot(agg, width=40, window_tokens=200_000)
-    assert snap["schema_version"] == LIVE_SCHEMA_VERSION == 3
+    assert snap["schema_version"] == LIVE_SCHEMA_VERSION == 4
+    assert snap["vertical"] is None  # no height: no sidebar map
     assert snap["width"] == 40
     assert [e["no"] for e in snap["timeline"]] == list(range(1, len(snap["timeline"]) + 1))
     assert all(isinstance(e["sidechain"], bool) for e in snap["timeline"])
@@ -170,3 +171,26 @@ def test_live_snapshot_uses_scroll_layout(tmp_path, fake_repo, rich_session_line
     assert snap["last"] == last_marks(agg["timeline"], agg["context_samples"], width=40,
                                       layout="scroll")
     assert snap["last"]["load"] is not None and snap["last"]["action"] is not None
+
+
+def test_live_snapshot_vertical_with_height(tmp_path, fake_repo, rich_session_lines):
+    from context_render.report.context_map import context_map_vertical
+
+    agg = _session_agg(tmp_path, fake_repo, rich_session_lines)
+    snap = live_snapshot(agg, width=40, window_tokens=200_000, height=20)
+    assert snap["vertical"] == context_map_vertical(agg["timeline"], agg["context_samples"], 20)
+    assert snap["vertical"] is not None
+    assert len(snap["vertical"]["rows"]) == len(snap["vertical"]["row_no"])
+    json.dumps(snap)
+
+
+def test_live_cli_height(fake_repo, fake_projects, monkeypatch):
+    _init(fake_repo, fake_projects, monkeypatch)
+    plain = json.loads(runner.invoke(app, ["live", SID, "--json"]).output)
+    assert plain["vertical"] is None
+    r = runner.invoke(app, ["live", SID, "--json", "--height", "20"])
+    assert r.exit_code == 0, r.output
+    snap = json.loads(r.output)
+    assert snap["vertical"]["rows"] and snap["map"] == plain["map"]
+    assert runner.invoke(app, ["live", SID, "--json", "--height", "0"]).exit_code == 2
+    assert runner.invoke(app, ["live", SID, "--json", "--height", "201"]).exit_code == 2

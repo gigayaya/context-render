@@ -579,7 +579,7 @@ def sessions(
     _guard(run)
 
 
-def _live(prefix: str, width: int) -> None:
+def _live(prefix: str, width: int, height: int | None) -> None:
     repo_root = find_repo_root()
     config = load_config(repo_root)
     # no manifest yet: scan in memory (what a fresh init would write) — live never writes
@@ -599,7 +599,7 @@ def _live(prefix: str, width: int) -> None:
                             facts=facts.facts, facts_tool_output=facts.tool_output_tokens_est,
                             stale=stale)
     snap = live_snapshot(agg, width, config.context_window_tokens,
-                         notice=None if has_manifest else NO_MANIFEST_NOTICE)
+                         notice=None if has_manifest else NO_MANIFEST_NOTICE, height=height)
     typer.echo(json.dumps(snap, ensure_ascii=False))
 
 
@@ -609,13 +609,15 @@ def live(
     as_json: bool = typer.Option(False, "--json", help="Emit the snapshot as JSON (required)"),
     width: int = typer.Option(60, "--width", min=20, max=200,
                               help="Map bar interior width in columns"),
+    height: int = typer.Option(None, "--height", min=1, max=200,
+                               help="Sidebar map rows (adds the vertical map)"),
 ):
     """Read-only JSON snapshot of one session for the ctxr-live mod (never writes the DB)."""
     if not as_json:
         typer.echo("Error: live is JSON-only; pass --json (human view: ctxr sessions <id>)",
                    err=True)
         raise typer.Exit(2)
-    _guard(lambda: _live(session, width))
+    _guard(lambda: _live(session, width, height))
 
 
 @app.command()

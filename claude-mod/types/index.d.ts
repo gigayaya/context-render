@@ -24,6 +24,7 @@ export type Snapshot = {
   map: Seg[][]
   axis: Seg[] | null
   last: { load: number | null; action: number | null } // timeline `no` behind each arrow row's rightmost mark
+  vertical: { rows: Seg[][]; row_no: (number | null)[] } | null // sidebar map (`--height`); row_no: timeline `no` behind each row
   timeline: TimelineRow[]
   occupancy: { current: number | null; peak: number | null; window: number }
   warnings: string[]
@@ -32,6 +33,11 @@ export type Snapshot = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'ctxr-live': { snapshot: Snapshot | null; error: string | null; isRefreshing: boolean }
+    'ctxr-live': {
+      snapshot: Snapshot | null
+      error: string | null
+      isRefreshing: boolean
+      placement: 'dock' | 'inline' | null // where the surface last seated the sidebar map pane
+    }
   }
 }

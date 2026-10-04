@@ -71,7 +71,7 @@ Install inside Claude Code (needs the `ctxr` command, see [Install](#install)):
 /plugin install ctxr-live@context-render
 ```
 
-Type `/ctx` to open the full timeline in a pane. No `ctxr init` needed; the mod is read-only and makes no API calls. If `ctxr` isn't on your PATH, set the plugin's `command` option in `/config`. Details: [docs/reports.md](https://github.com/gigayaya/context-render/blob/main/docs/reports.md#live-map-above-the-prompt-ctxr-live-mod).
+Type `/ctx` to open the full timeline in a pane. Prefer it beside the transcript? Set the plugin's `layout` option to `sidebar` for a vertical map docked on the right (fullscreen layout, 110+ columns; it falls back to the band otherwise). No `ctxr init` needed; the mod is read-only and makes no API calls. If `ctxr` isn't on your PATH, set the plugin's `command` option in `/config`. Details: [docs/reports.md](https://github.com/gigayaya/context-render/blob/main/docs/reports.md#live-map-above-the-prompt-ctxr-live-mod).
 
 ## The routing map
 
