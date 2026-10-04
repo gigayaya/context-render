@@ -63,6 +63,8 @@ See [docs/reports.md](docs/reports.md) for how to read each view in detail.
 
 `claude-mod/` ships **ctxr-live**, a Claude Code plugin that keeps the current session's context-window map drawn above the prompt while you work, so you don't need to wait for the session to end and run `ctxr sessions <id>`.
 
+![ctxr-live: the context-window map band drawn above the Claude Code prompt](docs/images/ctxr_live.png)
+
 - **The band above the prompt**: the map's load (▼) and action (▲) arrow rows. The timeline-number lanes and the occupancy bar are left out to keep it small. The map fills like a progress bar: one column per event from the left edge, marks that are already drawn stay put, and once it reaches the right edge the oldest events scroll out on the left (the box's left border turns to `┆`). `↻` means a refresh is running; `⚠ stale` means the last refresh failed and the band is showing the previous map.
 - **`/ctx`**: opens the full context timeline in a pane (`#row time ctx-tokens ─ tag component detail`, heuristic and subagent rows dimmed).
 - **Refresh**: starts at session start, and again after every tool call and every completed turn, and when the terminal width changes. It waits for `debounceMs` of quiet and runs only one `ctxr` process at a time, with a 5s timeout.
