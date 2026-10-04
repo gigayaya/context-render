@@ -6,18 +6,17 @@ Which of your Claude Code scaffolds — skills, commands, subagents, MCP servers
 
 ## Install
 
-Requires Python 3.11+. Install straight from GitHub:
+Requires Python 3.11+. Install from PyPI — `pipx` or `uv tool` keeps the CLI in its own environment:
+
+```bash
+pipx install context-render      # or: uv tool install context-render
+pip install context-render       # plain pip works too
+```
+
+Or install the latest `main` straight from GitHub:
 
 ```bash
 pip install git+https://github.com/gigayaya/context-render.git
-```
-
-Or clone first:
-
-```bash
-git clone https://github.com/gigayaya/context-render.git
-cd context-render
-pip install .
 ```
 
 Either way you get the `ctxr` command on your PATH.
@@ -45,25 +44,25 @@ Every session report (`sessions <id-prefix>`) has three views of the same sessio
 
 **File loads** — every file that entered the context, in injection order, with how it got there (`Read`, `Bash`, system-injected) and, where possible, which component it's attributed to:
 
-![File loads: context injection order with load mechanism and attribution](docs/images/file_load.png)
+![File loads: context injection order with load mechanism and attribution](https://raw.githubusercontent.com/gigayaya/context-render/main/docs/images/file_load.png)
 
 **Timeline** — the session as a chronological event list: hooks firing, CLAUDE.md injection, reads, bash commands, writes. `[L]` marks a load, `[I]` an invocation; `~` marks heuristic (vs. exact) attribution:
 
-![Timeline: chronological session events with L/I state markers](docs/images/timeline.png)
+![Timeline: chronological session events with L/I state markers](https://raw.githubusercontent.com/gigayaya/context-render/main/docs/images/timeline.png)
 
 **Context-window map** — when tokens entered the window and what put them there: injected loads (▼) above, your actions (▲) below, numbers linking each bar back to its timeline row, and cumulative window occupancy along the bottom:
 
-![Context-window map: injected loads vs. actions over time, with window occupancy](docs/images/context_window.png)
+![Context-window map: injected loads vs. actions over time, with window occupancy](https://raw.githubusercontent.com/gigayaya/context-render/main/docs/images/context_window.png)
 
 The report closes with a **SELF-DERIVATION** block — the top information needs the agent answered itself (searches, repo-structure mapping) with their token and window-occupancy cost; `report` aggregates the same rows across sessions.
 
-See [docs/reports.md](docs/reports.md) for how to read each view in detail.
+See [docs/reports.md](https://github.com/gigayaya/context-render/blob/main/docs/reports.md) for how to read each view in detail.
 
 ## Live map in Claude Code (ctxr-live mod)
 
 **ctxr-live** (`claude-mod/`) keeps the current session's context-window map above the prompt while you work — no need to wait for the session to end.
 
-![ctxr-live: the context-window map band drawn above the Claude Code prompt](docs/images/ctxr_live.png)
+![ctxr-live: the context-window map band drawn above the Claude Code prompt](https://raw.githubusercontent.com/gigayaya/context-render/main/docs/images/ctxr_live.png)
 
 Install inside Claude Code (needs the `ctxr` command, see [Install](#install)):
 
@@ -72,13 +71,13 @@ Install inside Claude Code (needs the `ctxr` command, see [Install](#install)):
 /plugin install ctxr-live@context-render
 ```
 
-Type `/ctx` to open the full timeline in a pane. No `ctxr init` needed; the mod is read-only and makes no API calls. If `ctxr` isn't on your PATH, set the plugin's `command` option in `/config`. Details: [docs/reports.md](docs/reports.md#live-map-above-the-prompt-ctxr-live-mod).
+Type `/ctx` to open the full timeline in a pane. No `ctxr init` needed; the mod is read-only and makes no API calls. If `ctxr` isn't on your PATH, set the plugin's `command` option in `/config`. Details: [docs/reports.md](https://github.com/gigayaya/context-render/blob/main/docs/reports.md#live-map-above-the-prompt-ctxr-live-mod).
 
 ## The routing map
 
 `ctxr map` is the one static view — no transcripts needed. It checks whether your guidance works as a routing map: carrier quality, loading guarantees, dead routes, and which files the agent can reach from root CLAUDE.md versus only by grepping.
 
-`ctxr map init` generates a skeleton (paths + TODO labels) for your agent to fill in. See [docs/map-authoring.md](docs/map-authoring.md).
+`ctxr map init` generates a skeleton (paths + TODO labels) for your agent to fill in. See [docs/map-authoring.md](https://github.com/gigayaya/context-render/blob/main/docs/map-authoring.md).
 
 ## The iteration loop
 
@@ -90,7 +89,7 @@ Rewriting a skill's description without observability means never learning wheth
 4. **Fix** the trigger or content, run the next task.
 5. **Verify** on the next session, or weekly with `report --since 30d`.
 
-It measures "did it fire", not "did it make the output better" — that's an eval question. Before deleting anything, read [docs/limitations.md](docs/limitations.md): used ≠ useful.
+It measures "did it fire", not "did it make the output better" — that's an eval question. Before deleting anything, read [docs/limitations.md](https://github.com/gigayaya/context-render/blob/main/docs/limitations.md): used ≠ useful.
 
 ## Commands
 
@@ -114,7 +113,7 @@ ctxr help | --version
 | `sessions` | List ingested sessions; `sessions <id-prefix>` shows one session's full report |
 | `live` | Read-only JSON snapshot of a (possibly in-progress) session, for the ctxr-live mod |
 | `report` | Cross-session aggregate: per-component status (active / low-use / unused / MISS), activity, cost, SELF-DERIVATION. `--emit-prompt` turns one row into a scaffold-drafting prompt |
-| `map` | Static routing-map measurements ([docs/map-authoring.md](docs/map-authoring.md)) |
+| `map` | Static routing-map measurements ([docs/map-authoring.md](https://github.com/gigayaya/context-render/blob/main/docs/map-authoring.md)) |
 | `map init` | Routing-map skeleton plus fill instructions; never overwrites an existing CLAUDE.md |
 | `clear` | Delete the db and reports (manifest/config kept); warns about sessions that can't be rebuilt |
 | `remove-hook` | Remove the SessionEnd hook that `init --hook` installed |
@@ -129,17 +128,17 @@ Common flags:
 
 ## Data & configuration
 
-Everything lives under `<repo>/.context-render/`. `manifest.yaml` is the hand-editable, version-controlled asset. `config.yaml` is optional — thresholds, billing mode, price table: see [docs/configuration.md](docs/configuration.md).
+Everything lives under `<repo>/.context-render/`. `manifest.yaml` is the hand-editable, version-controlled asset. `config.yaml` is optional — thresholds, billing mode, price table: see [docs/configuration.md](https://github.com/gigayaya/context-render/blob/main/docs/configuration.md).
 
 `db.sqlite` is an archive, not a cache: Claude Code expires transcripts after `cleanupPeriodDays` (default 30), after which the db is the only record. It is gitignored — back it up, and never delete and rebuild it to fix a problem.
 
 ## Documentation
 
-- [Three-state model & design principles](docs/three-state-model.md) — what R/L/I mean and how to act on them
-- [Reading the reports](docs/reports.md) — file loads, timeline, context-window map, live map mod, colors, exit codes
-- [Configuration](docs/configuration.md) — directory layout, config.yaml, SessionEnd hook
-- [Limitations](docs/limitations.md) — read before deleting anything
-- [Development](docs/development.md)
+- [Three-state model & design principles](https://github.com/gigayaya/context-render/blob/main/docs/three-state-model.md) — what R/L/I mean and how to act on them
+- [Reading the reports](https://github.com/gigayaya/context-render/blob/main/docs/reports.md) — file loads, timeline, context-window map, live map mod, colors, exit codes
+- [Configuration](https://github.com/gigayaya/context-render/blob/main/docs/configuration.md) — directory layout, config.yaml, SessionEnd hook
+- [Limitations](https://github.com/gigayaya/context-render/blob/main/docs/limitations.md) — read before deleting anything
+- [Development](https://github.com/gigayaya/context-render/blob/main/docs/development.md)
 
 ## Privacy
 

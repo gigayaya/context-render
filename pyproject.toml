@@ -1,10 +1,24 @@
 [project]
 name = "context-render"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Context window observability for Claude Code: see which of your scaffolding components an agent actually used"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Giga Chang" }]
+keywords = ["claude-code", "claude", "observability", "llm", "agents", "cli"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+]
 dependencies = [
     "typer>=0.12",
     "pyyaml>=6.0",
@@ -16,9 +30,18 @@ dev = ["pytest>=8.0", "ruff>=0.4"]
 [project.scripts]
 ctxr = "context_render.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/gigayaya/context-render"
+Documentation = "https://github.com/gigayaya/context-render/tree/main/docs"
+Issues = "https://github.com/gigayaya/context-render/issues"
+Changelog = "https://github.com/gigayaya/context-render/commits/main"
+
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = { attr = "context_render.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["context_render*"]
