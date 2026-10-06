@@ -1,6 +1,6 @@
 {
   "name": "ctxr-live",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Live context-window map from context-render above the prompt",
   "author": {
     "name": "gigayaya"
@@ -18,6 +18,12 @@
       "title": "Refresh debounce (ms)",
       "description": "Quiet time after a tool call before the map refreshes",
       "default": 400
+    },
+    "layout": {
+      "type": "string",
+      "title": "Map layout",
+      "description": "bottom (band above the prompt) or sidebar (vertical map docked right in fullscreen from 110 columns; falls back to the band)",
+      "default": "bottom"
     }
   }
 }

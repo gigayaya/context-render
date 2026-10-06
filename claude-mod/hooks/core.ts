@@ -1,12 +1,23 @@
 import type { Role, Seg, Snapshot, TimelineRow } from '../types'
 
-export const SCHEMA_VERSION = 3 // must match context_render/report/live.py LIVE_SCHEMA_VERSION
+export const SCHEMA_VERSION = 4 // must match context_render/report/live.py LIVE_SCHEMA_VERSION
 export const GUTTER = 10 // context_map.GUTTER
 export const RIGHT = 32 // widest right-hand note: " occupancy · peak 999.9k/1M tok"
 export const MIN_WIDTH = 20
 export const MAX_WIDTH = 200
 export const MIN_BODY = GUTTER + 2 + MIN_WIDTH + RIGHT // 64: below this the map cannot fit
 export const TIMEOUT_MS = 5000
+export const NAME_MAX = 15 // sidebar event names: code points before the cut
+export const SIDEBAR_COLUMNS = 26 // bar 4 + gap + arrows 2 + gap + name 15 + " ~" + slack
+export const SIDEBAR_CHROME = 4 // sidebar rows that are not events: header, legend, two borders
+export const MAX_HEIGHT = 200 // ctxr live --height ceiling
+
+export type Layout = 'bottom' | 'sidebar'
+export type Placement = 'dock' | 'inline'
+
+export function parseLayout(value: unknown): Layout {
+  return value === 'sidebar' ? 'sidebar' : 'bottom'
+}
 
 export type RunOutcome =
   | { kind: 'ok'; snapshot: Snapshot }
@@ -21,8 +32,9 @@ export function commandArgv(command: string): string[] {
   return argv.length > 0 ? argv : ['ctxr']
 }
 
-export function liveArgv(command: string, sessionId: string, width: number): string[] {
-  return [...commandArgv(command), 'live', sessionId, '--json', '--width', String(width)]
+export function liveArgv(command: string, sessionId: string, width: number, height?: number): string[] {
+  const argv = [...commandArgv(command), 'live', sessionId, '--json', '--width', String(width)]
+  return height === undefined ? argv : [...argv, '--height', String(height)]
 }
 
 function firstLine(text: string): string {
@@ -121,6 +133,50 @@ export function eventName(row: TimelineRow): string {
   if (row.component) return `${row.component}${mark}`
   if (row.kind === 'action' && row.tool) return `${row.tool} ${row.detail}${mark}`
   return `${row.detail}${mark}`
+}
+
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
+
+// an action's target without the tool: leading VAR=... dropped, paths cut to their basename
+function actionTarget(detail: string): string {
+  const words = detail.split(/\s+/).filter(word => word.length > 0)
+  while (words.length > 0 && ASSIGNMENT.test(words[0]!)) words.shift()
+  return words
+    .map(word => (word.includes('/') && !word.endsWith('/') ? word.slice(word.lastIndexOf('/') + 1) : word))
+    .join(' ')
+}
+
+// the sidebar's per-row name: component without its kind, action target, else the detail;
+// cut to NAME_MAX code points, then ` ~` for heuristic rows
+export function sidebarName(row: TimelineRow): string {
+  const mark = row.confidence === 'heuristic' ? ' ~' : ''
+  let base: string
+  if (row.component) base = row.component.slice(row.component.indexOf(':') + 1)
+  else if (row.kind === 'action') base = actionTarget(row.detail) || eventName({ ...row, confidence: 'exact' })
+  else base = row.detail
+  return Array.from(base).slice(0, NAME_MAX).join('') + mark
+}
+
+export function nameRole(row: TimelineRow): Role {
+  if (row.kind === 'compaction') return 'compaction'
+  if (row.kind === 'file_read' || row.transition === 'loaded') return 'load'
+  return 'action'
+}
+
+// event rows the docked pane fits; null when it fits none (no --height is sent)
+export function sidebarHeight(bodyRows: number | null): number | null {
+  if (bodyRows === null) return null
+  const height = Math.min(MAX_HEIGHT, bodyRows - SIDEBAR_CHROME)
+  return height >= 1 ? height : null
+}
+
+// the sidebar draws the map only while its pane is the shown, placed, docked one; else the band
+export function isSidebarActive(
+  layout: Layout,
+  pane: { isShown: boolean; isPlaced: boolean } | undefined,
+  placement: Placement | null,
+): boolean {
+  return layout === 'sidebar' && pane?.isShown === true && pane.isPlaced && placement === 'dock'
 }
 
 const ARROW_ROWS: Record<string, { side: 'load' | 'action'; role: Role }> = {

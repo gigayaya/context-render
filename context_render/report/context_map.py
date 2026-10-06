@@ -37,6 +37,13 @@ ranks scroll out on the left, the bars' left border turns to ┆, block heights 
 whole session's largest event as their scale, and occupancy carries in from the last
 scrolled-out sample.
 
+`context_map_vertical` is the ctxr-live sidebar form: the band turned 90° clockwise. One
+row per marked event (context samples take no row, there is no occupancy bar), oldest at
+the top, scroll layout down the height (top border ┌┄┄┐ once events scrolled out); each
+row holds the action and load lanes as horizontal eighths (HFILL, same √ scale as the
+band) and two fixed arrow cells right of the bar (▶ action, ◀ load). `row_no` names the
+newest timeline row behind each event row so the mod can write its name there.
+
 Two layers: `context_map_parts` builds rows of segments ({"t", "role", "no"}; role is a
 semantic name — load/action/compaction/occupancy/dim/bold — and label segments carry their
 timeline row number in `no`), `render_rows` paints them through Style. The ctxr-live mod
@@ -61,6 +68,7 @@ WIDTH = 60  # default bar interior columns; fixed for cross-form line identity
 WINDOW_TIERS = (200_000, 1_000_000)
 GUTTER = 10  # row-label gutter before the bar's left border
 MAX_LANES = 3  # label lanes per side
+HFILL = " ▏▎▍▌▋▊▉█"  # FILL on its side: 9 levels of left-aligned eighths (sidebar map)
 
 Seg = dict  # {"t": str, "role": str | None, "no": int | None}
 Row = list  # list[Seg]
@@ -114,6 +122,13 @@ def _lane_segs(lane: list[tuple[int, str, int]], role: str) -> Row:
     return segs
 
 
+def _level(est: int, max_est: int) -> int:
+    """Block level 1..8: √(est/max), so one huge event doesn't flatten the rest."""
+    if max_est <= 0 or est <= 0:
+        return 1
+    return max(1, round(math.sqrt(est / max_est) * (len(FILL) - 1)))
+
+
 def _block_segs(cells: dict[int, int], compactions: set[int], max_est: int,
                 role: str, width: int) -> Row:
     """One event lane: block height = √(est/max) over 8 levels; ⟐ cuts through."""
@@ -122,13 +137,16 @@ def _block_segs(cells: dict[int, int], compactions: set[int], max_est: int,
         if i in compactions:
             segs.append(_seg("⟐", "compaction"))
         elif i in cells:
-            e = cells[i]
-            lvl = 1 if max_est <= 0 or e <= 0 else max(
-                1, round(math.sqrt(e / max_est) * (len(FILL) - 1)))
-            segs.append(_seg(FILL[lvl], role))
+            segs.append(_seg(FILL[_level(cells[i], max_est)], role))
         else:
             segs.append(_seg(" "))
     return segs
+
+
+def _places(e: dict) -> bool:
+    """Events that leave a mark on the map: loads, actions and compactions."""
+    return (e.get("kind") in ("file_read", "action", "compaction")
+            or e.get("transition") in ("loaded", "invoked"))
 
 
 def _by_col(est: dict[int, int], col: dict[int, int]) -> dict[int, int]:
@@ -153,9 +171,11 @@ def window_scale(samples: list[dict], window_tokens: int) -> int:
     return window_tokens
 
 
-def _marks(timeline: list[dict], samples: list[dict], width: int, layout: str) -> dict | None:
+def _marks(timeline: list[dict], samples: list[dict], width: int, layout: str,
+           placed_only: bool = False) -> dict | None:
     """Column mapping + per-side marks shared by the map and `last_marks`; None when the
-    map is empty (no main-window rows, or no events to place)."""
+    map is empty (no main-window rows, or no events to place). `placed_only` (sidebar map,
+    no occupancy bar): only marked events take a rank, samples none."""
     # the map draws the session's own window; sidechain rows belong to a subagent's window
     # (they stay in the timeline listing, tagged) — mirrors the context_samples exclusion
     # number against the FULL timeline first: the listing (render_timeline_lines) numbers
@@ -164,8 +184,13 @@ def _marks(timeline: list[dict], samples: list[dict], width: int, layout: str) -
     if not numbered:
         return None
     # one shared column mapping so the occupancy bar lines up with the event bar
-    refs = sorted({e["evidence_ref"] for _, e in numbered if e.get("evidence_ref") is not None}
-                  | {s["idx"] for s in samples})
+    if placed_only:
+        refs = sorted({e["evidence_ref"] for _, e in numbered
+                       if e.get("evidence_ref") is not None and _places(e)})
+    else:
+        refs = sorted({e["evidence_ref"] for _, e in numbered
+                       if e.get("evidence_ref") is not None}
+                      | {s["idx"] for s in samples})
     if not refs:
         return None
     if layout == "scroll":
@@ -184,6 +209,7 @@ def _marks(timeline: list[dict], samples: list[dict], width: int, layout: str) -
     load_est: dict[int, int] = {}  # evidence_ref → Σ est tokens
     act_est: dict[int, int] = {}
     compactions: set[int] = set()
+    compaction_marks: list[tuple[int, int]] = []  # (col, timeline row number)
     for no, e in numbered:
         ref = e.get("evidence_ref")
         if ref is None:
@@ -194,6 +220,7 @@ def _marks(timeline: list[dict], samples: list[dict], width: int, layout: str) -
         if kind == "compaction":
             if b is not None:
                 compactions.add(b)
+                compaction_marks.append((b, no))
         elif kind == "file_read" or e.get("transition") == "loaded":
             load_est[ref] = load_est.get(ref, 0) + est
             if b is not None:
@@ -204,7 +231,7 @@ def _marks(timeline: list[dict], samples: list[dict], width: int, layout: str) -
                 acts.append((b, no))
     return {"timeline": [e for _, e in numbered], "col": col, "offset": offset,
             "loads": loads, "acts": acts, "load_est": load_est, "act_est": act_est,
-            "compactions": compactions}
+            "compactions": compactions, "compaction_marks": compaction_marks}
 
 
 def last_marks(timeline: list[dict], samples: list[dict], width: int = WIDTH,
@@ -298,6 +325,57 @@ def context_map_parts(timeline: list[dict], samples: list[dict], width: int = WI
         axis = [_seg(gut), _seg(f"{t0}{'':<{width - len(t0) - len(t1) + 2}}{t1}", "dim")]
     return rows, axis
 
+
+
+def context_map_vertical(timeline: list[dict], samples: list[dict],
+                         height: int) -> dict | None:
+    """Sidebar map for ctxr-live (`layout: sidebar`): the band turned 90° clockwise.
+
+    One row per marked event rank (samples take none), oldest at the top, filling down in
+    the scroll layout; past `height` the oldest scroll out at the top and the top border
+    turns to ┄. Each row: action lane, load lane (HFILL, the band's √ scale against the
+    whole session's largest event), then two fixed arrow cells right of the bar — ▶ action,
+    ◀ load. `row_no` runs alongside `rows`: the newest timeline row behind each event row
+    (the mod writes its name there), None for header and border rows. None when nothing
+    is placed."""
+    m = _marks(timeline, samples, height, "scroll", placed_only=True)
+    if m is None:
+        return None
+    col = m["col"]
+    load_cells = _by_col(m["load_est"], col)
+    act_cells = _by_col(m["act_est"], col)
+    scrolled = [e for est in (m["load_est"], m["act_est"])
+                for ref, e in est.items() if ref not in col]
+    max_est = max([*load_cells.values(), *act_cells.values(), *scrolled], default=0)
+    load_rows = {b for b, _ in m["loads"]}
+    act_rows = {b for b, _ in m["acts"]}
+    newest: dict[int, int] = {}
+    for b, no in [*m["loads"], *m["acts"], *m["compaction_marks"]]:
+        newest[b] = max(newest.get(b, 0), no)
+
+    def cell(cells: dict[int, int], r: int, role: str) -> Seg:
+        return _seg(HFILL[_level(cells[r], max_est)], role) if r in cells else _seg(" ")
+
+    edge = "┄┄" if m["offset"] else "──"
+    rows: list[Row] = [
+        [_seg(" "), _seg("ctx map", "bold")],
+        [_seg(" "), _seg("▶", "action"), _seg(" act ", "dim"), _seg("◀", "load"),
+         _seg(" inj", "dim")],
+        [_seg(" "), _seg(f"┌{edge}┐", "dim")],
+    ]
+    row_no: list[int | None] = [None, None, None]
+    for r in sorted(newest):
+        if r in m["compactions"]:
+            cells = [_seg("⟐", "compaction"), _seg("⟐", "compaction")]
+        else:
+            cells = [cell(act_cells, r, "action"), cell(load_cells, r, "load")]
+        rows.append([_seg(" "), _seg("│", "dim"), *cells, _seg("│", "dim"), _seg(" "),
+                     _seg("▶", "action") if r in act_rows else _seg(" "),
+                     _seg("◀", "load") if r in load_rows else _seg(" ")])
+        row_no.append(newest[r])
+    rows.append([_seg(" "), _seg("└──┘", "dim")])
+    row_no.append(None)
+    return {"rows": rows, "row_no": row_no}
 
 def context_map_rows(timeline: list[dict], samples: list[dict], width: int = WIDTH,
                      window_tokens: int = 200_000) -> list[Row]:
